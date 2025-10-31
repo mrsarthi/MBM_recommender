@@ -1,13 +1,37 @@
-# import os
-# import pandas as pd
-# import requests
-# from dotenv import load_dotenv
+import os
+import pandas as pd
+import requests
+from dotenv import load_dotenv
 
-# dataFrame = pd.read_csv('dataset/ratings.csv')
-# load_dotenv()
-# key = os.getenv('TMDB_key')
+load_dotenv()
+key = os.getenv('TMDB_key')
 
-# searchMovie = input("Enter the movie name: ")
+
+def analyze():
+    genreDict = {
+        'Action': 28,
+        'Adventure': 12,
+        'Animation': 16,
+        'Comedy': 35,
+        'Crime': 80,
+        'Documentary': 99,
+        'Drama': 18,
+        'Family': 10751,
+        'Fantasy': 14,
+        'History': 36,
+        'Horror': 27,
+        'Music': 10402,
+        'Mystery': 9648,
+        'Romance': 10749,
+        'Science Fiction': 878,
+        'TV Movie': 10770,
+        'Thriller': 53,
+        'War': 10752,
+        'Western': 37
+    }
+    x
+    desiredGenre = askForMood()
+    # print(desiredGenre)
 
 
 def askForMood():
@@ -23,14 +47,12 @@ def askForMood():
     target = mood_genreMap.get(mood)
 
     if target:
-        print(f"Got it! Looking for {', '.join(target)} movies")
         return target
     else:
         return None
 
 
-print(askForMood())
-
+analyze()
 
 # if key is None:
 #     print("Error!")
