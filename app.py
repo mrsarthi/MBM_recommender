@@ -40,14 +40,30 @@ def askForMood():
         'suspenseful': ['Thriller', 'Horror', 'Mystery']
     }
 
-    mood = input('What are we in mood for today? ').lower()
-    target = moodGenreMap.get(mood)
+    moods = list(moodGenreMap.keys())
+    print("What are we in the mood for today? Choose a number or type a mood name:")
+    for i, m in enumerate(moods, start=1):
+        print(f"  {i}. {m.title()}")
+
+    choice = input("Enter choice (number or name): ").strip().lower()
+
+    target = None
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(moods):
+            target = moodGenreMap[moods[idx]]
+    else:
+        # exact match or prefix match
+        for key in moods:
+            if choice == key.lower() or key.lower().startswith(choice):
+                target = moodGenreMap[key]
+                break
 
     if target:
         print(f"Got it. Looking for {'| '.join(target)} movies.")
         return target
     else:
-        print(f"Sorry, I don't have a 'mood setting' for '{mood}'.")
+        print(f"Sorry, I don't have a 'mood setting' for '{choice}'.")
         return None
 
 
@@ -86,7 +102,7 @@ def analyze(watchedSet):
             print("Could not find a valid genre ID for that mood.")
             return
 
-        genreIdString = ",".join(targetGenreIds)
+        genreIdString = "|".join(targetGenreIds)
         print(f"Searching for genres: {genreIdString}")
 
         discoverUrl = f"{baseUrl}/discover/movie"
