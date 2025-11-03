@@ -1,7 +1,7 @@
 import os
-import sys
 import pandas as pd
 import requests
+import tkinter as tk
 from dotenv import load_dotenv
 import time
 
@@ -19,7 +19,7 @@ def watchedMovies():
     except FileNotFoundError:
         print('Could not find "C:\\Users\\wfors\\Desktop\\Scripts\\MBM_recommender\\dataset\\watched.csv".')
         print("Please add your Letterboxd 'watched.csv' file to the 'dataset' folder.")
-        sys.exit()
+        exit()
 
 
 def askForMood():
@@ -143,11 +143,15 @@ def analyze(watchedSet):
 
 
 if __name__ == "__main__":
+    root = tk()
+    root.mainloop()
+    
     if key is None:
         print("ERROR: TMDB_key not found. Please check your .env file.")
-        sys.exit()
+        exit()
 
     print("Loading your 'watched' list...")
     watchedSet = watchedMovies()
 
     analyze(watchedSet)
+    
