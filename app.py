@@ -1,4 +1,5 @@
 import os
+import sys
 import pandas as pd
 import requests
 from dotenv import load_dotenv
@@ -12,13 +13,13 @@ baseUrl = "https://api.themoviedb.org/3"
 
 def watchedMovies():
     try:
-        preLogged = pd.read_csv('dataset/watched.csv')
+        preLogged = pd.read_csv('C:\\Users\\wfors\\Desktop\\Scripts\\MBM_recommender\\dataset\\watched.csv')
         watchedSet = set(preLogged['Name'].str.strip())
         return watchedSet
     except FileNotFoundError:
-        print('Could not find "dataset/watched.csv".')
+        print('Could not find "C:\\Users\\wfors\\Desktop\\Scripts\\MBM_recommender\\dataset\\watched.csv".')
         print("Please add your Letterboxd 'watched.csv' file to the 'dataset' folder.")
-        exit()
+        sys.exit()
 
 
 def askForMood():
@@ -144,7 +145,7 @@ def analyze(watchedSet):
 if __name__ == "__main__":
     if key is None:
         print("ERROR: TMDB_key not found. Please check your .env file.")
-        exit()
+        sys.exit()
 
     print("Loading your 'watched' list...")
     watchedSet = watchedMovies()
