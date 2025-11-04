@@ -1,25 +1,40 @@
 import os
+import sys
 import pandas as pd
 import requests
-import tkinter as tk
 from dotenv import load_dotenv
 import time
+import tkinter as tk
+from tkinter import filedialog, ttk, scrolledtext
+import traceback
 
-load_dotenv()
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
+load_dotenv(dotenv_path=resource_path('.env'))
 key = os.getenv('TMDB_key')
 
 baseUrl = "https://api.themoviedb.org/3"
 
 
-def watchedMovies():
+def watchedMovies(watched_csv_path):
     try:
-        preLogged = pd.read_csv('C:\\Users\\wfors\\Desktop\\Scripts\\MBM_recommender\\dataset\\watched.csv')
+        preLogged = pd.read_csv(watched_csv_path)
         watchedSet = set(preLogged['Name'].str.strip())
         return watchedSet
     except FileNotFoundError:
-        print('Could not find "C:\\Users\\wfors\\Desktop\\Scripts\\MBM_recommender\\dataset\\watched.csv".')
-        print("Please add your Letterboxd 'watched.csv' file to the 'dataset' folder.")
-        exit()
+        print(f'Could not find "{watched_csv_path}".')
+        print("Please restart and select the correct 'watched.csv' file.")
+        return None
+    except Exception as e:
+        print(f"An error occurred while reading the file: {e}")
+        return None
 
 
 def askForMood():
@@ -40,35 +55,10 @@ def askForMood():
         'romantic': ['Romance', 'Drama', 'Comedy'],
         'suspenseful': ['Thriller', 'Horror', 'Mystery']
     }
-
-    moods = list(moodGenreMap.keys())
-    print("What are we in the mood for today? Choose a number or type a mood name:")
-    for i, m in enumerate(moods, start=1):
-        print(f"  {i}. {m.title()}")
-
-    choice = input("Enter choice (number or name): ").strip().lower()
-
-    target = None
-    if choice.isdigit():
-        idx = int(choice) - 1
-        if 0 <= idx < len(moods):
-            target = moodGenreMap[moods[idx]]
-    else:
-        # exact match or prefix match
-        for key in moods:
-            if choice == key.lower() or key.lower().startswith(choice):
-                target = moodGenreMap[key]
-                break
-
-    if target:
-        print(f"Got it. Looking for {'| '.join(target)} movies.")
-        return target
-    else:
-        print(f"Sorry, I don't have a 'mood setting' for '{choice}'.")
-        return None
+    return moodGenreMap
 
 
-def analyze(watchedSet):
+def analyze(watchedSet, desiredGenre):
     genreDict = {
         'Action': 28,
         'Adventure': 12,
@@ -90,7 +80,6 @@ def analyze(watchedSet):
         'War': 10752,
         'Western': 37
     }
-    desiredGenre = askForMood()
 
     if desiredGenre:
         targetGenreIds = []
@@ -117,6 +106,8 @@ def analyze(watchedSet):
             'language': 'en-US'
         }
 
+        time.sleep(1)
+
         response = requests.get(discoverUrl, params=discoverParams)
 
         if response.status_code == 200:
@@ -142,16 +133,113 @@ def analyze(watchedSet):
             print(f"Message: {response.json().get('status_message')}")
 
 
+class ConsoleRedirector:
+    def __init__(self, text_widget):
+        self.text_widget = text_widget
+
+    def write(self, text):
+        self.text_widget.insert(tk.END, text)
+        self.text_widget.see(tk.END)
+
+    def flush(self):
+        pass
+
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        root.title("Mood Movie Recommender v1.0")
+        root.geometry("600x600") 
+        
+        self.mood_map = askForMood()
+        
+        file_frame = ttk.Frame(root, padding="10")
+        file_frame.pack(fill='x')
+
+        ttk.Label(file_frame, text="1. Select 'watched.csv':").pack(side=tk.LEFT)
+        
+        self.file_path_var = tk.StringVar()
+        file_entry = ttk.Entry(file_frame, textvariable=self.file_path_var, state='readonly', width=40)
+        file_entry.pack(side=tk.LEFT, fill='x', expand=True, padx=5)
+        
+        browse_button = ttk.Button(file_frame, text="Browse...", command=self._on_browse_click)
+        browse_button.pack(side=tk.LEFT)
+
+        mood_frame = ttk.Frame(root, padding="10")
+        mood_frame.pack(fill='x')
+        
+        ttk.Label(mood_frame, text="2. Select your mood:").pack(anchor='w')
+        
+        self.mood_listbox = tk.Listbox(mood_frame, height=10, exportselection=False)
+        self.mood_listbox.pack(fill='x', expand=True, pady=5)
+        
+        for mood in self.mood_map.keys():
+            self.mood_listbox.insert(tk.END, mood.title())
+
+        run_button = ttk.Button(root, text="Get Recommendations", command=self._on_analyze_click)
+        run_button.pack(pady=10)
+
+        console_frame = ttk.Frame(root, padding="10")
+        console_frame.pack(fill='both', expand=True)
+        
+        ttk.Label(console_frame, text="--- Results ---").pack(anchor='w')
+        
+        self.console_output = scrolledtext.ScrolledText(console_frame, wrap=tk.WORD, height=15)
+        self.console_output.pack(fill='both', expand=True, pady=5)
+        
+        sys.stdout = ConsoleRedirector(self.console_output)
+        sys.stderr = ConsoleRedirector(self.console_output)
+
+    def _on_browse_click(self):
+        path = filedialog.askopenfilename(
+            title="Please select your Letterboxd 'watched.csv' file",
+            filetypes=(("CSV Files", "*.csv"), ("All Files", "*.*"))
+        )
+        if path:
+            self.file_path_var.set(path)
+            print(f"File selected: {path}")
+
+    def _on_analyze_click(self):
+        try:
+            self.console_output.delete('1.0', tk.END)
+            
+            file_path = self.file_path_var.get()
+            selected_indices = self.mood_listbox.curselection()
+
+            if not file_path:
+                print("Error: Please select your 'watched.csv' file first.")
+                return
+            
+            if not selected_indices:
+                print("Error: Please select a mood from the list.")
+                return
+
+            print("Loading 'watched' list...")
+            watchedSet = watchedMovies(file_path)
+            
+            if watchedSet is not None:
+                selected_mood_name = self.mood_listbox.get(selected_indices[0])
+                
+                desiredGenre = self.mood_map.get(selected_mood_name.lower())
+                
+                analyze(watchedSet, desiredGenre)
+                
+        except Exception as e:
+            print("--- A CRITICAL ERROR OCCURRED ---")
+            print(traceback.format_exc())
+
+
 if __name__ == "__main__":
-    root = tk()
-    root.mainloop()
-    
     if key is None:
-        print("ERROR: TMDB_key not found. Please check your .env file.")
-        exit()
+        def show_key_error():
+            error_root = tk.Tk()
+            error_root.withdraw()
+            tk.messagebox.showerror("Fatal Error", "ERROR: TMDB_key not found. Please check your .env file.")
+            error_root.destroy()
+        
+        show_key_error()
+        sys.exit()
 
-    print("Loading your 'watched' list...")
-    watchedSet = watchedMovies()
-
-    analyze(watchedSet)
-    
+    root = tk.Tk()
+    app = App(root)
+    root.mainloop()
