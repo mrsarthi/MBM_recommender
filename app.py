@@ -7,6 +7,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, ttk, scrolledtext
 import traceback
+import re
 
 
 def resource_path(relative_path):
@@ -22,11 +23,15 @@ key = os.getenv('TMDB_key')
 
 baseUrl = "https://api.themoviedb.org/3"
 
+def titleNormalize(title):
+    title = title.lower()
+    title = re.sub(r'[^a-z0-9]', '', title)
+    return title
 
 def watchedMovies(watched_csv_path):
     try:
         preLogged = pd.read_csv(watched_csv_path)
-        watchedSet = set(preLogged['Name'].str.strip())
+        watchedSet = {titleNormalize(name) for name in preLogged['Name'].str.strip()}
         return watchedSet
     except FileNotFoundError:
         print(f'Could not find "{watched_csv_path}".')
@@ -116,7 +121,7 @@ def analyze(watchedSet, desiredGenre):
 
             finalPicks = []
             for movie in results:
-                movieTitle = movie['title'].strip()
+                movieTitle = titleNormalize(movie['title'].strip())
                 if movieTitle not in watchedSet:
                     finalPicks.append(movie)
 
