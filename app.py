@@ -8,11 +8,21 @@ import tkinter as tk
 from tkinter import filedialog, ttk, scrolledtext, messagebox
 import traceback
 import re
-
+import json
+import webbrowser
 
 def resource_path(relative_path):
+    """ Get absolute path to read-only resources, works for dev and for PyInstaller """
     try:
         base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+def app_data_path(relative_path):
+    """ Get absolute path to read/write user files, works for dev and for PyInstaller """
+    try:
+        base_path = os.path.dirname(sys.executable)
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
@@ -23,25 +33,49 @@ key = os.getenv('TMDB_key')
 
 baseUrl = "https://api.themoviedb.org/3"
 
+CONFIG_FILE = app_data_path('config.json')
+APP_MEMORY_FILE = app_data_path('app_memory.csv')
+
 
 def titleNormalize(title):
     title = title.lower()
     title = re.sub(r'[^a-z0-9]', '', title)
     return title
 
-
-def watchedMovies(watched_csv_path):
+def watchedMovies(letterboxd_path, app_memory_path):
+    watchedSet = set()
+    
     try:
-        preLogged = pd.read_csv(watched_csv_path)
-        watchedSet = {titleNormalize(name) for name in preLogged['Name'].str.strip()}
-        return watchedSet
+        preLogged = pd.read_csv(letterboxd_path)
+        watchedSet.update({titleNormalize(name) for name in preLogged['Name'].str.strip()})
+        print(f"Loaded {len(watchedSet)} movies from {letterboxd_path}")
     except FileNotFoundError:
-        print(f'Could not find "{watched_csv_path}".')
+        print(f'Error: Could not find "{letterboxd_path}".')
         print("Please restart and select the correct 'watched.csv' file.")
         return None
     except Exception as e:
-        print(f"An error occurred while reading the file: {e}")
+        print(f"An error occurred while reading {letterboxd_path}: {e}")
         return None
+
+    try:
+        if os.path.exists(app_memory_path) and os.path.getsize(app_memory_path) > 0:
+            memLogged = pd.read_csv(app_memory_path)
+            if 'title' in memLogged.columns:
+                memory_set = {titleNormalize(name) for name in memLogged['title'].str.strip()}
+                original_size = len(watchedSet)
+                watchedSet.update(memory_set)
+                print(f"Loaded {len(watchedSet) - original_size} more movies from app memory.")
+            else:
+                print("Warning: 'app_memory.csv' is missing 'title' column.")
+        else:
+            print("No app memory file found. Creating one.")
+            with open(app_memory_path, 'w', newline='', encoding='utf-8') as f:
+                f.write('title\n')
+                
+    except Exception as e:
+        print(f"An error occurred while reading {app_memory_path}: {e}")
+    
+    return watchedSet
 
 
 def askForMood():
@@ -67,25 +101,11 @@ def askForMood():
 
 def analyze(watchedSet, desiredGenre):
     genreDict = {
-        'Action': 28,
-        'Adventure': 12,
-        'Animation': 16,
-        'Comedy': 35,
-        'Crime': 80,
-        'Documentary': 99,
-        'Drama': 18,
-        'Family': 10751,
-        'Fantasy': 14,
-        'History': 36,
-        'Horror': 27,
-        'Music': 10402,
-        'Mystery': 9648,
-        'Romance': 10749,
-        'Science Fiction': 878,
-        'TV Movie': 10770,
-        'Thriller': 53,
-        'War': 10752,
-        'Western': 37
+        'Action': 28, 'Adventure': 12, 'Animation': 16, 'Comedy': 35,
+        'Crime': 80, 'Documentary': 99, 'Drama': 18, 'Family': 10751,
+        'Fantasy': 14, 'History': 36, 'Horror': 27, 'Music': 10402,
+        'Mystery': 9648, 'Romance': 10749, 'Science Fiction': 878,
+        'TV Movie': 10770, 'Thriller': 53, 'War': 10752, 'Western': 37
     }
 
     if desiredGenre:
@@ -97,23 +117,17 @@ def analyze(watchedSet, desiredGenre):
 
         if not targetGenreIds:
             print("Could not find a valid genre ID for that mood.")
-            return
+            return []
 
         genreIdString = "|".join(targetGenreIds)
         print(f"Searching for genres: {genreIdString}")
 
         discoverUrl = f"{baseUrl}/discover/movie"
-
         discoverParams = {
-            'api_key': key,
-            'with_genres': genreIdString,
-            'vote_average.gte': 7.0,
-            'vote_count.gte': 500,
-            'sort_by': 'popularity.desc',
-            'language': 'en-US'
+            'api_key': key, 'with_genres': genreIdString,
+            'vote_average.gte': 7.0, 'vote_count.gte': 500,
+            'sort_by': 'popularity.desc', 'language': 'en-US'
         }
-
-        time.sleep(1)
 
         response = requests.get(discoverUrl, params=discoverParams)
 
@@ -127,17 +141,15 @@ def analyze(watchedSet, desiredGenre):
                 if movieTitle not in watchedSet:
                     finalPicks.append(movie)
 
-            if finalPicks:
-                print("\nHere are some movies you might like:")
-                for pick in finalPicks[:10]:
-                    year = pick['release_date'].split('-')[0]
-                    rating = pick['vote_average']
-                    print(f"- {pick['title']} ({year}) - Rated: {rating}/10")
-            else:
+            if not finalPicks:
                 print("Found some movies, but it looks like you've seen them all!")
+            
+            return finalPicks
         else:
             print(f"Error fetching from TMDB: {response.status_code}")
             print(f"Message: {response.json().get('status_message')}")
+    
+    return []
 
 
 class ConsoleRedirector:
@@ -155,8 +167,11 @@ class ConsoleRedirector:
 
 
 class App:
-    def __init__(self, root):
+    def __init__(self, root, watched_path, initialWatchedSet):
         self.root = root
+        self.watched_path = watched_path 
+        self.watchedSet = initialWatchedSet
+        
         root.title("Mood Movie Recommender v1.0")
         root.geometry("650x700")
         root.configure(bg='#2E2E2E')
@@ -179,22 +194,32 @@ class App:
             foreground=[('active', TEXT_COLOR)]
         )
         self.style.configure('TEntry', fieldbackground='#3C3C3C', foreground=TEXT_COLOR, borderwidth=0)
+        self.style.configure('TNotebook', background=BG_COLOR, borderwidth=0)
+        self.style.configure('TNotebook.Tab', background=BUTTON_COLOR, foreground=TEXT_COLOR, padding=[10, 5], font=('Segoe UI', 10, 'bold'))
+        self.style.map('TNotebook.Tab',
+            background=[('selected', ACCENT_COLOR), ('active', BUTTON_HOVER)],
+        )
         
         self.mood_map = askForMood()
         
-        file_frame = ttk.Frame(root, padding="15 10")
+        self.current_results = {}
+        
+        file_frame = ttk.Frame(root, padding="15 10 15 5")
         file_frame.pack(fill='x')
 
-        ttk.Label(file_frame, text="1. Select 'watched.csv':").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(file_frame, text="1. Watched File:").pack(side=tk.LEFT, padx=(0, 10))
         
         self.file_path_var = tk.StringVar()
+        if self.watched_path:
+            self.file_path_var.set(self.watched_path)
+            
         file_entry = ttk.Entry(file_frame, textvariable=self.file_path_var, state='readonly', width=40)
         file_entry.pack(side=tk.LEFT, fill='x', expand=True, ipady=4)
         
-        browse_button = ttk.Button(file_frame, text="Browse...", command=self._on_browse_click, style='TButton')
+        browse_button = ttk.Button(file_frame, text="Change...", command=self._on_browse_click, style='TButton')
         browse_button.pack(side=tk.LEFT, padx=(10, 0))
 
-        mood_frame = ttk.Frame(root, padding="15 10")
+        mood_frame = ttk.Frame(root, padding="15 10 15 5")
         mood_frame.pack(fill='x')
         
         ttk.Label(mood_frame, text="2. Select your mood:").pack(anchor='w')
@@ -211,23 +236,48 @@ class App:
             self.mood_listbox.insert(tk.END, mood.title())
 
         run_button = ttk.Button(root, text="Get Recommendations", command=self._on_analyze_click, style='TButton')
-        run_button.pack(pady=10, ipady=5, ipadx=10)
+        run_button.pack(pady=5, ipady=5, ipadx=10)
 
-        console_frame = ttk.Frame(root, padding="15 10")
-        console_frame.pack(fill='both', expand=True)
+        notebook = ttk.Notebook(root, padding="15 10")
+        notebook.pack(fill='both', expand=True)
         
-        ttk.Label(console_frame, text="--- Results ---").pack(anchor='w')
+        results_frame = ttk.Frame(notebook)
+        notebook.add(results_frame, text='Results')
         
-        self.console_output = scrolledtext.ScrolledText(console_frame, wrap=tk.WORD, height=15,
+        self.results_listbox = tk.Listbox(results_frame, height=15, exportselection=False,
+                                          background='#3C3C3C', foreground=TEXT_COLOR,
+                                          borderwidth=0, relief='flat',
+                                          highlightthickness=1, highlightbackground=BUTTON_COLOR,
+                                          selectbackground=ACCENT_COLOR, selectforeground=TEXT_COLOR,
+                                          font=('Segoe UI', 10))
+        self.results_listbox.pack(fill='both', expand=True, pady=5)
+        
+        button_frame = ttk.Frame(results_frame)
+        button_frame.pack(fill='x', pady=5)
+        
+        mark_seen_button = ttk.Button(button_frame, text="Mark as Seen", command=self._on_mark_as_seen, style='TButton')
+        mark_seen_button.pack(side=tk.LEFT, fill='x', expand=True, padx=5, ipady=5)
+        
+        view_details_button = ttk.Button(button_frame, text="View Details", command=self._on_view_details, style='TButton')
+        view_details_button.pack(side=tk.LEFT, fill='x', expand=True, padx=5, ipady=5)
+        
+        log_frame = ttk.Frame(notebook)
+        notebook.add(log_frame, text='Log')
+        
+        self.console_output = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15,
                                                         background='#1E1E1E', foreground=TEXT_COLOR,
                                                         borderwidth=0, relief='flat',
-                                                        highlightthickness=0,
-                                                        font=('Consolas', 10))
+                                                        highlightthickness=0, font=('Consolas', 10))
         self.console_output.pack(fill='both', expand=True, pady=5)
         self.console_output.configure(state='disabled')
 
         sys.stdout = ConsoleRedirector(self.console_output)
         sys.stderr = ConsoleRedirector(self.console_output)
+
+    def _save_config(self, path):
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump({'watched_path': path}, f)
+        print(f"Saved config to {CONFIG_FILE}")
 
     def _on_browse_click(self):
         path = filedialog.askopenfilename(
@@ -236,35 +286,90 @@ class App:
         )
         if path:
             self.file_path_var.set(path)
+            self.watched_path = path
+            self._save_config(path)
             print(f"File selected: {path}")
+            print("Reloading watched list...")
+            self.watchedSet = watchedMovies(self.watched_path, APP_MEMORY_FILE)
+            if self.watchedSet is not None:
+                print(f"Loaded {len(self.watchedSet)} total watched movies.")
+
+    def _on_mark_as_seen(self):
+        selected_indices = self.results_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning("No Selection", "Please select a movie from the list first.")
+            return
+
+        selected_title_display = self.results_listbox.get(selected_indices[0])
+        movie_obj = self.current_results.get(selected_title_display)
+        
+        if movie_obj:
+            normalized_title = titleNormalize(movie_obj['title'])
+            
+            self.watchedSet.add(normalized_title)
+            
+            try:
+                with open(APP_MEMORY_FILE, 'a', newline='', encoding='utf-8') as f:
+                    f.write(f'"{movie_obj["title"]}"\n')
+            except Exception as e:
+                print(f"Error saving to app_memory.csv: {e}")
+
+            self.results_listbox.delete(selected_indices[0])
+            print(f"Marked '{selected_title_display}' as seen.")
+
+    def _on_view_details(self):
+        selected_indices = self.results_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning("No Selection", "Please select a movie from the list first.")
+            return
+
+        selected_title_display = self.results_listbox.get(selected_indices[0])
+        movie_obj = self.current_results.get(selected_title_display)
+        
+        if movie_obj:
+            movie_id = movie_obj['id']
+            url = f"https://www.themoviedb.org/movie/{movie_id}"
+            print(f"Opening {url} in browser...")
+            webbrowser.open_new_tab(url)
+        else:
+            print(f"Error: Could not find details for {selected_title_display}")
+
 
     def _on_analyze_click(self):
         try:
             self.console_output.configure(state='normal')
             self.console_output.delete('1.0', tk.END)
             
-            file_path = self.file_path_var.get()
+            self.results_listbox.delete(0, tk.END)
+            self.current_results.clear()
+            
             selected_indices = self.mood_listbox.curselection()
-
-            if not file_path:
-                print("Error: Please select your 'watched.csv' file first.")
-                self.console_output.configure(state='disabled')
-                return
+            
+            if self.watchedSet is None:
+                 print("Error: Watched list is not loaded.")
+                 print("Please click 'Change...' to select your 'watched.csv' file.")
+                 self.console_output.configure(state='disabled')
+                 return
             
             if not selected_indices:
                 print("Error: Please select a mood from the list.")
                 self.console_output.configure(state='disabled')
                 return
 
-            print("Loading 'watched' list...")
-            watchedSet = watchedMovies(file_path)
+            selected_mood_name = self.mood_listbox.get(selected_indices[0])
+            desiredGenre = self.mood_map.get(selected_mood_name.lower())
             
-            if watchedSet is not None:
-                selected_mood_name = self.mood_listbox.get(selected_indices[0])
-                
-                desiredGenre = self.mood_map.get(selected_mood_name.lower())
-                
-                analyze(watchedSet, desiredGenre)
+            finalPicks = analyze(self.watchedSet, desiredGenre)
+            
+            if finalPicks:
+                print(f"\nFound {len(finalPicks)} recommendations. Populating results list...")
+                for movie in finalPicks[:20]:
+                    year = movie['release_date'].split('-')[0]
+                    rating = movie['vote_average']
+                    display_title = f"{movie['title']} ({year}) - Rated: {rating}/10"
+                    
+                    self.results_listbox.insert(tk.END, display_title)
+                    self.current_results[display_title] = movie
             
             self.console_output.configure(state='disabled')
                 
@@ -281,10 +386,34 @@ if __name__ == "__main__":
             error_root.withdraw()
             messagebox.showerror("Fatal Error", "ERROR: TMDB_key not found. Please check your .env file.")
             error_root.destroy()
-        
         show_key_error()
         sys.exit()
 
+    watched_path = None
+    initialWatchedSet = None
+    
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                path_from_config = config.get('watched_path')
+                
+                if path_from_config and os.path.exists(path_from_config):
+                    watched_path = path_from_config
+                else:
+                    if path_from_config: 
+                        print(f"Saved path not valid: {path_from_config}")
+        except Exception as e:
+            print(f"Error reading config.json: {e}")
+
+    if watched_path:
+        print(f"Config loaded. Loading 'watched' list from: {watched_path}")
+        initialWatchedSet = watchedMovies(watched_path, APP_MEMORY_FILE)
+    else:
+        print("No config file found. App will start in an unconfigured state.")
+        print("Please select your 'watched.csv' file using the 'Change...' button.")
+
     root = tk.Tk()
-    app = App(root)
+    
+    app = App(root, watched_path, initialWatchedSet)
     root.mainloop()

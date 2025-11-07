@@ -11,7 +11,7 @@ baseUrl = "https://api.themoviedb.org/3"
 
 user_data = pd.read_csv('dataset/ratings.csv')
 
-# def tmdbDataCollection():
+# def tmdbDataCollection(data):
     
 
 def migrate():
@@ -21,6 +21,8 @@ def migrate():
     newData['user_rating'] = user_data['Rating']
 
     newData.to_csv('dataset/V2ModelTrain.csv', index=False)
+
+    # tmdbDataCollection(newData)
 
 def createCSV():
     smartHeaders = {
@@ -33,6 +35,8 @@ def createCSV():
 
     print(f"Created '{'dataset/V2ModelTrain.csv'}' with your headers.")
 
+    migrate()
+
 
 def titleNormalize(title):
     title = title.lower()
@@ -42,6 +46,3 @@ def titleNormalize(title):
 
 if __name__ == "__main__":
     createCSV()
-    migrate()
-    # tmdbDataCollection()
-    
