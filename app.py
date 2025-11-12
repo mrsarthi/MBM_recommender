@@ -172,8 +172,15 @@ class App:
         self.watched_path = watched_path 
         self.watchedSet = initialWatchedSet
         
-        root.title("Mood Movie Recommender v1.0")
-        root.geometry("650x700")
+        root.title("Mood Movie Recommender v1.4")
+        # root.geometry("750x850")
+        appWidth = 750
+        appHeight = 850
+        screenWidth = root.winfo_screenwidth()
+        screenHeight = root.winfo_screenheight()
+        x = int((screenWidth / 2) - (appWidth / 2))
+        y = int((screenHeight / 2) - (appHeight / 2))
+        root.geometry(f"{appWidth}x{appHeight}+{x}+{y}")
         root.configure(bg='#2E2E2E')
 
         self.style = ttk.Style(root)
@@ -203,6 +210,7 @@ class App:
         self.mood_map = askForMood()
         
         self.current_results = {}
+        self.current_search_results = {} # ADDED: A dictionary to hold movies from the "Log a Movie" tab
         
         file_frame = ttk.Frame(root, padding="15 10 15 5")
         file_frame.pack(fill='x')
@@ -261,6 +269,40 @@ class App:
         view_details_button = ttk.Button(button_frame, text="View Details", command=self._on_view_details, style='TButton')
         view_details_button.pack(side=tk.LEFT, fill='x', expand=True, padx=5, ipady=5)
         
+        # --- ADDED: This is the new "Log a Movie" tab ---
+        log_movie_frame = ttk.Frame(notebook)
+        notebook.add(log_movie_frame, text='Log a Movie')
+        
+        # ADDED: A frame for the search bar
+        search_bar_frame = ttk.Frame(log_movie_frame, padding="5 10")
+        search_bar_frame.pack(fill='x')
+
+        ttk.Label(search_bar_frame, text="Search for a movie:").pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.search_entry = ttk.Entry(search_bar_frame, width=30, font=('Segoe UI', 10))
+        self.search_entry.pack(side=tk.LEFT, fill='x', expand=True, ipady=4)
+        
+        search_button = ttk.Button(search_bar_frame, text="Search TMDB", command=self._on_tmdb_search, style='TButton')
+        search_button.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # ADDED: A frame for the search results
+        search_results_frame = ttk.Frame(log_movie_frame, padding="10 5")
+        search_results_frame.pack(fill='both', expand=True)
+        
+        ttk.Label(search_results_frame, text="Search Results:").pack(anchor='w')
+        
+        self.search_results_listbox = tk.Listbox(search_results_frame, height=15, exportselection=False,
+                                                 background='#3C3C3C', foreground=TEXT_COLOR,
+                                                 borderwidth=0, relief='flat',
+                                                 highlightthickness=1, highlightbackground=BUTTON_COLOR,
+                                                 selectbackground=ACCENT_COLOR, selectforeground=TEXT_COLOR,
+                                                 font=('Segoe UI', 10))
+        self.search_results_listbox.pack(fill='both', expand=True, pady=5)
+        
+        add_to_watched_button = ttk.Button(search_results_frame, text="Add to Watched History", command=self._on_add_to_watched, style='TButton')
+        add_to_watched_button.pack(fill='x', pady=5, ipady=5)
+        # --- End of new "Log a Movie" tab ---
+
         log_frame = ttk.Frame(notebook)
         notebook.add(log_frame, text='Log')
         
@@ -304,16 +346,10 @@ class App:
         movie_obj = self.current_results.get(selected_title_display)
         
         if movie_obj:
-            normalized_title = titleNormalize(movie_obj['title'])
+            # CHANGED: We now call a helper function to do the "add to memory" logic
+            self._add_movie_to_memory(movie_obj)
             
-            self.watchedSet.add(normalized_title)
-            
-            try:
-                with open(APP_MEMORY_FILE, 'a', newline='', encoding='utf-8') as f:
-                    f.write(f'"{movie_obj["title"]}"\n')
-            except Exception as e:
-                print(f"Error saving to app_memory.csv: {e}")
-
+            # Remove from the GUI list
             self.results_listbox.delete(selected_indices[0])
             print(f"Marked '{selected_title_display}' as seen.")
 
@@ -377,6 +413,115 @@ class App:
             print("--- A CRITICAL ERROR OCCURRED ---")
             print(traceback.format_exc())
             self.console_output.configure(state='disabled')
+
+    # --- ADDED: New function to handle TMDB Search ---
+    # --- This is the MODIFIED function. Paste over your old one. ---
+    def _on_tmdb_search(self):
+        try:
+            self.console_output.configure(state='normal')
+            self.console_output.delete('1.0', tk.END)
+            
+            query = self.search_entry.get()
+            if not query:
+                print("Error: Please enter a movie title to search.")
+                self.console_output.configure(state='disabled')
+                return
+
+            self.search_results_listbox.delete(0, tk.END)
+            self.current_search_results.clear()
+            
+            print(f"Searching TMDB for '{query}'...")
+            
+            search_url = f"{baseUrl}/search/movie"
+            search_params = {
+                'api_key': key,
+                'query': query,
+                'language': 'en-US'
+            }
+            
+            response = requests.get(search_url, params=search_params)
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data['results']
+                
+                if results:
+                    # --- ADDED: We now keep track of how many movies we add ---
+                    movies_added = 0
+                    print(f"Found {len(results)} matches. Filtering against your watched history...")
+
+                    for movie in results[:20]:
+                        
+                        # --- ADDED: This is the new filter logic ---
+                        normalized_title = titleNormalize(movie['title'])
+                        
+                        # We only add the movie if it's NOT in your watchedSet
+                        if normalized_title not in self.watchedSet:
+                            year = movie['release_date'].split('-')[0] if movie['release_date'] else "N/A"
+                            display_title = f"{movie['title']} ({year})"
+                            
+                            self.search_results_listbox.insert(tk.END, display_title)
+                            self.current_search_results[display_title] = movie
+                            movies_added += 1 # Count it
+                    
+                    # --- ADDED: A message if all movies were filtered out ---
+                    if movies_added == 0:
+                        print("Found matches, but you've already logged all of them.")
+                        
+                else:
+                    print(f"No results found for '{query}'.")
+            else:
+                print(f"Error fetching from TMDB: {response.status_code}")
+                print(f"Message: {response.json().get('status_message')}")
+                
+            self.console_output.configure(state='disabled')
+        except Exception as e:
+            print("--- A CRITICAL ERROR OCCURRED ---")
+            print(traceback.format_exc())
+            self.console_output.configure(state='disabled')
+
+    # --- ADDED: New function to add a movie from the search tab to memory ---
+    def _on_add_to_watched(self):
+        selected_indices = self.search_results_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning("No Selection", "Please select a movie from the search results first.")
+            return
+            
+        selected_title_display = self.search_results_listbox.get(selected_indices[0])
+        movie_obj = self.current_search_results.get(selected_title_display)
+        
+        if movie_obj:
+            # We call our new helper function
+            self._add_movie_to_memory(movie_obj)
+            
+            # Remove it from the search list so you can't add it twice
+            self.search_results_listbox.delete(selected_indices[0])
+        else:
+            print(f"Error: Could not find data for {selected_title_display}")
+
+    # --- ADDED: A new helper function to avoid duplicating code ---
+    def _add_movie_to_memory(self, movie_obj):
+        """Helper to add a movie to the in-memory set and the CSV file."""
+        
+        normalized_title = titleNormalize(movie_obj['title'])
+        
+        # Check if we already know about it
+        if normalized_title in self.watchedSet:
+            print(f"'{movie_obj['title']}' is already in your watched history.")
+            return
+
+        # 1. Add to in-memory set
+        self.watchedSet.add(normalized_title)
+        
+        # 2. Add to app_memory.csv
+        try:
+            # 'a' (append mode) adds to the end of the file
+            with open(APP_MEMORY_FILE, 'a', newline='', encoding='utf-8') as f:
+                # We save the *real* title, not the normalized one
+                f.write(f'"{movie_obj["title"]}"\n')
+            print(f"Successfully logged '{movie_obj['title']}' as seen.")
+        except Exception as e:
+            print(f"Error saving to app_memory.csv: {e}")
 
 
 if __name__ == "__main__":

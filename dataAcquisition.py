@@ -3,7 +3,7 @@ import requests
 from dotenv import load_dotenv
 import os
 import re
-from tqdm import tqdm   # <-- NEW import
+from tqdm import tqdm   
 
 load_dotenv()
 
@@ -13,21 +13,18 @@ baseUrl = "https://api.themoviedb.org/3"
 user_data = pd.read_csv('dataset/ratings.csv')
 
 def tmdbDataCollection(newData):
-    # Wrap iterrows with tqdm to show progress bar
     for index, row in tqdm(newData.iterrows(), total=newData.shape[0], desc="Fetching TMDB data"):
         title = row['title']
         year = row['year']
 
-        # Search TMDB by title + year
         search_url = f"{baseUrl}/search/movie"
         params = {"api_key": key, "query": title, "year": year}
         response = requests.get(search_url, params=params).json()
 
         if response.get("results"):
-            movie = response["results"][0]  # first match
+            movie = response["results"][0]  
             movie_id = movie["id"]
 
-            # Get movie details
             details_url = f"{baseUrl}/movie/{movie_id}"
             details_params = {"api_key": key}
             details = requests.get(details_url, params=details_params).json()
@@ -35,12 +32,10 @@ def tmdbDataCollection(newData):
             summary = details.get("overview", "")
             genres = [g["name"] for g in details.get("genres", [])]
 
-            # Fill DataFrame
             newData.at[index, "movie_id"] = movie_id
             newData.at[index, "summary"] = summary
             newData.at[index, "tag"] = ", ".join(genres)
 
-    # Save updated CSV
     newData.to_csv('dataset/V2ModelTrain.csv', index=False)
 
 def migrate():
@@ -50,7 +45,6 @@ def migrate():
     newData['user_rating'] = user_data['Rating']
 
     newData.to_csv('dataset/V2ModelTrain.csv', index=False)
-    # Collect TMDB data with progress bar
     tmdbDataCollection(newData)
 
 def createCSV():
