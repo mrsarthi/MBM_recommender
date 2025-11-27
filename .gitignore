@@ -2,3 +2,5 @@
 *.env
 venv/
 output/
+temp.py
+dataset/
