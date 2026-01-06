@@ -11,7 +11,7 @@ def feature_engineering():
     try:
         df = pd.read_csv(INPUT_FILE)
     except FileNotFoundError:
-        print("File not found. Please run clean_dataset.py first.")
+        print("File not found. Please run dataClean.py first.")
         return
 
     print("Encoding PG Ratings...")
