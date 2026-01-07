@@ -1,8 +1,9 @@
 import pandas as pd
 import joblib
+import os
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.metrics import mean_absolute_error
 
 # --- Configuration ---
 INPUT_FILE = 'dataset/V2ModelTrain_ReadyForAI.csv'
@@ -11,54 +12,48 @@ COLUMNS_PATH = 'models/model_columns.pkl'
 
 def train():
     print("Loading data...")
-    try:
-        df = pd.read_csv(INPUT_FILE)
-    except FileNotFoundError:
-        print("Error: Training data not found. Run engineer_features.py first.")
+    if not os.path.exists(INPUT_FILE):
+        print(f"Error: {INPUT_FILE} not found. Run featureEngineering.py first.")
         return
 
+    df = pd.read_csv(INPUT_FILE)
+
     # --- 1. Separate Features (X) and Target (y) ---
-    
-    # The Target: What we want to predict
     y = df['user_rating']
     
-    # The Features: What the AI gets to see to make its prediction
-    # We DROP columns that are IDs, Targets, or Leakage (sentiment)
-    X = df.drop(columns=[
-        'user_rating',      # The answer (don't let the AI see it!)
-        'movie_id',         # Random number, implies no pattern
-        'title',            # Text name, not useful for this numeric model
-        'sentiment_score'   # LEAKAGE: You don't know this before watching
-    ])
+    # DROP columns that are not features.
+    # We removed 'sentiment_score' from this list because it no longer exists.
+    drop_cols = ['user_rating', 'movie_id', 'title']
     
-    # Handle any leftover NaNs (just in case)
+    # Safe drop: Only drop columns that actually exist
+    existing_drop_cols = [c for c in drop_cols if c in df.columns]
+    X = df.drop(columns=existing_drop_cols)
+    
+    # Fill any remaining NaNs with 0
     X = X.fillna(0)
 
     # --- 2. Split Data ---
-    # We hide 20% of your data to "test" the AI later. 
-    # It's like saving some questions for the final exam.
+    print(f"Features: {X.shape[1]} columns (Genres, Context, Plot Keywords, etc.)")
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
     # --- 3. Train the Model ---
     print(f"Training Random Forest on {len(X_train)} movies...")
-    
-    # n_estimators=100 means "create 100 different decision trees and average them"
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
 
     # --- 4. Evaluate ---
     print("Evaluating model...")
     predictions = model.predict(X_test)
-    
-    # Mean Absolute Error: On average, how many stars is the AI off by?
     mae = mean_absolute_error(y_test, predictions)
+    
     print(f"\n--- Results ---")
     print(f"Average Error: {mae:.2f} stars")
-    print(f"(If the AI predicts 4.0, the real rating is usually between {4.0-mae:.2f} and {4.0+mae:.2f})")
-
+    
     # --- 5. Save ---
-    # We save the model AND the list of columns. 
-    # We need the column list later to ensure we feed new data in the exact same order.
+    # Create models directory if it doesn't exist
+    if not os.path.exists('models'):
+        os.makedirs('models')
+
     joblib.dump(model, MODEL_PATH)
     joblib.dump(list(X.columns), COLUMNS_PATH)
     
