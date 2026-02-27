@@ -24,9 +24,19 @@ import matplotlib
 # Use a non-interactive backend for Tkinter embedding
 matplotlib.use('TkAgg')
 
-if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+class NullWriter:
+    def write(self, text): pass
+    def flush(self): pass
+    def isatty(self): return False
+
+if sys.stdout is None:
+    sys.stdout = NullWriter()
+elif hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
-if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+
+if sys.stderr is None:
+    sys.stderr = NullWriter()
+elif hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
 # Local Imports for ML Pipeline
@@ -737,6 +747,7 @@ class App(ctk.CTk):
             if error:
                 self.import_btn.configure(state="normal", text="Try Again")
                 self.progress.pack_forget()
+            self.update_idletasks()
         self.after(0, update)
 
     def _save_config(self, path):
