@@ -5,40 +5,44 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 
-# --- Configuration ---
-INPUT_FILE = 'dataset/V2ModelTrain_ReadyForAI.csv'
-MODEL_PATH = 'models/personal_ai_model.pkl'
-COLUMNS_PATH = 'models/model_columns.pkl'
+def train_personal_model(input_file='dataset/user_profile_features.csv', 
+                         model_path='models/personal_ai_model.pkl', 
+                         columns_path='models/model_columns.pkl'):
+    """Trains a personalized ML model based on the user's generated feature set."""
+    print("Loading personalized data...")
+    if not os.path.exists(input_file):
+        print(f"Error: {input_file} not found. Run featureEngineering.py first.")
+        return False
 
-def train():
-    print("Loading data...")
-    if not os.path.exists(INPUT_FILE):
-        print(f"Error: {INPUT_FILE} not found. Run featureEngineering.py first.")
-        return
+    df = pd.read_csv(input_file)
 
-    df = pd.read_csv(INPUT_FILE)
+    if 'user_rating' not in df.columns:
+        print("Error: No 'user_rating' target column found to train the AI.")
+        return False
 
     # --- 1. Separate Features (X) and Target (y) ---
     y = df['user_rating']
     
-    # DROP columns that are not features.
-    # We removed 'sentiment_score' from this list because it no longer exists.
-    drop_cols = ['user_rating', 'movie_id', 'title']
-    
-    # Safe drop: Only drop columns that actually exist
+    drop_cols = ['user_rating', 'movie_id', 'title', 'Title', 'Name']
     existing_drop_cols = [c for c in drop_cols if c in df.columns]
     X = df.drop(columns=existing_drop_cols)
     
-    # Fill any remaining NaNs with 0
+    # Fill any remaining NaNs with 0 (important for TF-IDF / Genre matrices)
     X = X.fillna(0)
+
+    # Need at least 15 movies to do a meaningful train/test split without crashing
+    if len(X) < 15:
+        print(f"Insufficient data (only {len(X)} movies). The AI needs at least 15 to train properly.")
+        return False
 
     # --- 2. Split Data ---
     print(f"Features: {X.shape[1]} columns (Genres, Context, Plot Keywords, etc.)")
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
     # --- 3. Train the Model ---
-    print(f"Training Random Forest on {len(X_train)} movies...")
-    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    # Using RandomForest: robust against overfitting on smaller personal datasets
+    print(f"Training Personal AI on {len(X_train)} movies...")
+    model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
     model.fit(X_train, y_train)
 
     # --- 4. Evaluate ---
@@ -47,18 +51,18 @@ def train():
     mae = mean_absolute_error(y_test, predictions)
     
     print(f"\n--- Results ---")
-    print(f"Average Error: {mae:.2f} stars")
+    print(f"Average AI Prediction Error: ±{mae:.2f} stars")
     
     # --- 5. Save ---
-    # Create models directory if it doesn't exist
-    if not os.path.exists('models'):
-        os.makedirs('models')
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    os.makedirs(os.path.dirname(columns_path), exist_ok=True)
 
-    joblib.dump(model, MODEL_PATH)
-    joblib.dump(list(X.columns), COLUMNS_PATH)
+    joblib.dump(model, model_path)
+    joblib.dump(list(X.columns), columns_path)
     
-    print(f"\n✅ Model saved to '{MODEL_PATH}'")
-    print(f"✅ Feature columns saved to '{COLUMNS_PATH}'")
+    print(f"\n✅ Personal Model saved to '{model_path}'")
+    print(f"✅ Feature columns saved to '{columns_path}'")
+    return True
 
 if __name__ == "__main__":
-    train()
+    train_personal_model()
