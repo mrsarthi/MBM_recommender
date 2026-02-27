@@ -12,9 +12,31 @@ import re
 import json
 import webbrowser
 import io
+import threading
 from PIL import Image, ImageTk
 import joblib
 import numpy as np
+import requests_cache
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib
+
+# Use a non-interactive backend for Tkinter embedding
+matplotlib.use('TkAgg')
+
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
+# Local Imports for ML Pipeline
+from data_handling.import_letterboxd import process_letterboxd_import
+from featureEngineering import feature_engineering
+from modelTrain import train_personal_model
+
+# --- Optimization: Cache TMDB API calls ---
+# This makes the app lightweight and fast by not re-downloading movie data it has already seen.
+requests_cache.install_cache('tmdb_cache', backend='sqlite', expire_after=86400) # Cache for 24 hours
 
 # --- 1. Path & Config Setup ---
 
@@ -49,9 +71,9 @@ def get_user_data_path(filename):
 CONFIG_FILE = get_user_data_path('config.json')
 APP_MEMORY_FILE = get_user_data_path('app_memory_ids.csv')
 
-MODEL_PATH = get_path('models/personal_ai_model.pkl')
-COLUMNS_PATH = get_path('models/model_columns.pkl')
-VECTORIZER_PATH = get_path('models/summary_vectorizer.pkl')
+MODEL_PATH = get_user_data_path('user_data/personal_ai_model.pkl')
+COLUMNS_PATH = get_user_data_path('user_data/model_columns.pkl')
+VECTORIZER_PATH = get_user_data_path('user_data/summary_vectorizer.pkl')
 
 
 # --- 2. Helper Functions ---
@@ -301,65 +323,113 @@ class App(ctk.CTk):
         self.current_results = {}
         self.current_search_results = {}
         self.poster_base_url = "https://image.tmdb.org/t/p/w200"
+        self.new_logs_count = 0  # Track new logs for auto-retrain prompt
         
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1) # Main content area expands
+        self.grid_rowconfigure(0, weight=1) # Let the main frame expand
+        
+        # Main Container
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.grid(row=0, column=0, sticky="nsew")
+        self.main_container.grid_columnconfigure(0, weight=1)
+        self.main_container.grid_rowconfigure(2, weight=1)
 
         # System Font
         self.main_font = ('Segoe UI', 12)
         self.header_font = ('Segoe UI', 14, 'bold')
         self.title_font = ('Segoe UI', 20, 'bold')
 
+        # --- Check if Model Exists. If not, show Onboarding. ---
+        if self.ai_model is None:
+            self.show_onboarding()
+        else:
+            self.show_main_app()
+
+    def show_onboarding(self):
+        """Builds the Welcome / Import Screen"""
+        self.onboard_frame = ctk.CTkFrame(self.main_container, fg_color=self.COLORS['bg_card'], corner_radius=15)
+        self.onboard_frame.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.6, relheight=0.6)
+        
+        ctk.CTkLabel(self.onboard_frame, text="Welcome to Personal AI Recommender", font=('Segoe UI', 24, 'bold'), text_color=self.COLORS['text_main']).pack(pady=(40, 10))
+        ctk.CTkLabel(self.onboard_frame, text="To get started, please import your Letterboxd Data Export.", font=('Segoe UI', 14), text_color=self.COLORS['text_sub']).pack(pady=(0, 20))
+        ctk.CTkLabel(self.onboard_frame, text="We will analyze your taste and build a custom Neural ML model specifically for you.", font=('Segoe UI', 12, 'italic'), text_color=self.COLORS['accent']).pack(pady=(0, 40))
+        
+        self.import_btn = ctk.CTkButton(self.onboard_frame, text="Import Letterboxd Data (.zip)", command=self._on_import_zip, 
+                      height=50, width=250, font=('Segoe UI', 14, 'bold'), 
+                      fg_color=self.COLORS['accent'], hover_color=self.COLORS['accent_hover'], corner_radius=25)
+        self.import_btn.pack(pady=10)
+        
+        self.skip_import_btn = ctk.CTkButton(self.onboard_frame, text="Start Fresh (Opt Out)", command=self._on_skip_import, 
+                      height=40, width=250, font=('Segoe UI', 12, 'bold'), 
+                      fg_color="transparent", hover_color=self.COLORS['bg_card_hover'], border_width=1, border_color=self.COLORS['text_sub'], text_color=self.COLORS['text_sub'], corner_radius=20)
+        self.skip_import_btn.pack(pady=5)
+        
+        self.status_label = ctk.CTkLabel(self.onboard_frame, text="", font=('Segoe UI', 12), text_color=self.COLORS['success'])
+        self.status_label.pack(pady=20)
+        
+        self.progress = ctk.CTkProgressBar(self.onboard_frame, width=300, progress_color=self.COLORS['accent'])
+        self.progress.pack(pady=10)
+        self.progress.set(0)
+        self.progress.pack_forget() # Hide initially
+
+    def show_main_app(self):
+        """Builds the main application UI"""
+        # Clear container in case we came from onboarding
+        for w in self.main_container.winfo_children(): w.destroy()
+        
         # --- Build UI ---
         self.setup_top_bar(row=0)
         self.setup_mood_area(row=1)
         self.setup_main_tabs(row=2)
         
-        # Redirect Console
-        # Note: We do this after setup_main_tabs so self.console_output exists
+        # Redirect Console AFTER all UI elements are built preventing Tkinter threaded crashes
         sys.stdout = ConsoleRedirector(self.console_output)
         sys.stderr = ConsoleRedirector(self.console_output)
 
     def setup_top_bar(self, row):
         """Top bar with File selection and Context"""
-        container = ctk.CTkFrame(self, fg_color=self.COLORS['bg_card'], corner_radius=10)
+        container = ctk.CTkFrame(self.main_container, fg_color="transparent")
         container.grid(row=row, column=0, sticky="ew", padx=20, pady=(20, 10))
         
-        # 1. File Section
-        file_frame = ctk.CTkFrame(container, fg_color="transparent")
-        file_frame.pack(side="left", padx=15, pady=10)
+        # 1. File Section Card
+        file_frame = ctk.CTkFrame(container, fg_color=self.COLORS['bg_card'], corner_radius=10)
+        file_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
         
-        ctk.CTkLabel(file_frame, text="Watched History", font=self.header_font, text_color=self.COLORS['accent']).pack(anchor="w")
+        file_inner = ctk.CTkFrame(file_frame, fg_color="transparent")
+        file_inner.pack(padx=20, pady=15, anchor="w", fill="x")
+        
+        ctk.CTkLabel(file_inner, text="Watched History", font=self.header_font, text_color=self.COLORS['accent']).pack(anchor="w")
         
         self.file_path_var = tk.StringVar(value=os.path.basename(self.watched_path) if self.watched_path else "Not Selected")
         
-        path_row = ctk.CTkFrame(file_frame, fg_color="transparent")
+        path_row = ctk.CTkFrame(file_inner, fg_color="transparent")
         path_row.pack(fill="x", pady=(5,0))
         
-        ctk.CTkLabel(path_row, textvariable=self.file_path_var, font=('Segoe UI', 11), text_color=self.COLORS['text_sub']).pack(side="left")
-        ctk.CTkButton(path_row, text="Change", command=self._on_browse_click, width=60, height=24, 
+        ctk.CTkLabel(path_row, textvariable=self.file_path_var, font=('Segoe UI', 12), text_color=self.COLORS['text_sub']).pack(side="left")
+        ctk.CTkButton(path_row, text="Change File", command=self._on_browse_click, width=80, height=28, 
                       fg_color=self.COLORS['bg_card_hover'], hover_color=self.COLORS['accent'], 
-                      font=('Segoe UI', 10)).pack(side="left", padx=10)
+                      font=('Segoe UI', 11, 'bold')).pack(side="left", padx=10)
 
-        # Divider
-        ctk.CTkFrame(container, width=2, height=40, fg_color=self.COLORS['bg_main']).pack(side="left", padx=10, pady=10)
-
-        # 2. Context Section
-        ctx_frame = ctk.CTkFrame(container, fg_color="transparent")
-        ctx_frame.pack(side="left", padx=15, pady=10)
+        # 2. Context Section Card
+        ctx_frame = ctk.CTkFrame(container, fg_color=self.COLORS['bg_card'], corner_radius=10)
+        ctx_frame.pack(side="left", fill="both", expand=True, padx=(10, 0))
         
-        ctk.CTkLabel(ctx_frame, text="Company", font=self.header_font, text_color=self.COLORS['accent']).pack(anchor="w")
+        ctx_inner = ctk.CTkFrame(ctx_frame, fg_color="transparent")
+        ctx_inner.pack(padx=20, pady=15, anchor="w", fill="x")
+        
+        ctk.CTkLabel(ctx_inner, text="Context (Who are you with?)", font=self.header_font, text_color=self.COLORS['accent']).pack(anchor="w")
         
         self.context_var = ctk.StringVar(value="Alone")
-        ctx_menu = ctk.CTkOptionMenu(ctx_frame, variable=self.context_var, 
+        ctx_menu = ctk.CTkOptionMenu(ctx_inner, variable=self.context_var, 
                                      values=["Alone", "Friends", "Family", "Partner", "Other"], 
-                                     width=140, fg_color=self.COLORS['bg_card_hover'], 
-                                     button_color=self.COLORS['accent'], button_hover_color=self.COLORS['accent_hover'])
-        ctx_menu.pack(pady=(5,0))
+                                     width=200, height=30, fg_color=self.COLORS['bg_card_hover'], 
+                                     button_color=self.COLORS['accent'], button_hover_color=self.COLORS['accent_hover'],
+                                     dropdown_fg_color=self.COLORS['bg_card'], dropdown_text_color=self.COLORS['text_main'])
+        ctx_menu.pack(pady=(5,0), anchor="w")
 
     def setup_mood_area(self, row):
         """Mood selection and Run Button"""
-        container = ctk.CTkFrame(self, fg_color="transparent")
+        container = ctk.CTkFrame(self.main_container, fg_color="transparent")
         container.grid(row=row, column=0, sticky="ew", padx=20, pady=5)
         
         # Header
@@ -378,19 +448,26 @@ class App(ctk.CTk):
                                                           fg_color="transparent", scrollbar_button_color=self.COLORS['bg_card'])
         self.mood_frame_scrollable.pack(fill='x', expand=True, pady=(10, 5))
         
-        self.selected_mood_var = tk.StringVar(value="happy") # Default
+        self.selected_mood_var = tk.StringVar(value="Happy") # Default
         
-        # Create Mood Chips
-        for mood in self.mood_map.keys():
-            # Using Radio Button styled to look minimal
-            rb = ctk.CTkRadioButton(self.mood_frame_scrollable, text=mood.title(), variable=self.selected_mood_var, value=mood,
-                                    font=('Segoe UI', 12), text_color=self.COLORS['text_main'],
-                                    fg_color=self.COLORS['accent'], hover_color=self.COLORS['accent_hover'])
-            rb.pack(side="left", padx=15)
+        # Segmented Button for clean mood selection (like tags/chips)
+        mood_values = [m.title() for m in self.mood_map.keys()]
+        
+        self.mood_segmented = ctk.CTkSegmentedButton(
+            self.mood_frame_scrollable, 
+            values=mood_values,
+            variable=self.selected_mood_var,
+            font=('Segoe UI', 12, 'bold'), 
+            selected_color=self.COLORS['accent'],
+            selected_hover_color=self.COLORS['accent_hover'],
+            unselected_color=self.COLORS['bg_card'],
+            unselected_hover_color=self.COLORS['bg_card_hover']
+        )
+        self.mood_segmented.pack(side="left", fill="x", expand=True, padx=5, pady=5)
 
     def setup_main_tabs(self, row):
         """Tabs for Results, Log, and Console"""
-        self.notebook = ctk.CTkTabview(self, fg_color=self.COLORS['bg_main'], 
+        self.notebook = ctk.CTkTabview(self.main_container, fg_color=self.COLORS['bg_main'], 
                                        segmented_button_fg_color=self.COLORS['bg_card'],
                                        segmented_button_selected_color=self.COLORS['accent'],
                                        segmented_button_unselected_color=self.COLORS['bg_card'],
@@ -398,13 +475,90 @@ class App(ctk.CTk):
         
         self.notebook.grid(row=row, column=0, sticky="nsew", padx=20, pady=(0, 20))
         
+        
+        self.notebook.add('My Taste')
         self.notebook.add('Recommendations')
-        self.notebook.add('Library Search')
+        self.notebook.add('Log a Movie')
         self.notebook.add('System Log')
         
+        self.setup_my_taste_tab(self.notebook.tab('My Taste'))
         self.setup_results_tab(self.notebook.tab('Recommendations'))
-        self.setup_log_tab(self.notebook.tab('Library Search'))
+        self.setup_log_tab(self.notebook.tab('Log a Movie'))
         self.setup_console_tab(self.notebook.tab('System Log'))
+
+    def setup_my_taste_tab(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(0, weight=1)
+        
+        # We need a frame to hold the plots
+        chart_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        chart_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
+        chart_frame.columnconfigure(0, weight=1)
+        chart_frame.columnconfigure(1, weight=1)
+        chart_frame.rowconfigure(0, weight=1)
+
+        # Matplotlib Figure (Dark Theme)
+        plt.style.use('dark_background')
+        fig = plt.figure(figsize=(10, 5), facecolor=self.COLORS['bg_card'])
+        
+        try:
+            # 1. Load User Data
+            df = pd.DataFrame()
+            if self.watched_path and os.path.exists(self.watched_path):
+                df = pd.read_csv(self.watched_path)
+            
+            if df.empty or 'Rating' not in df.columns:
+                ctk.CTkLabel(chart_frame, text="Not enough rating data yet. Log some movies!", 
+                             font=self.header_font).pack(pady=50)
+                return
+
+            # Clean and process data mapping
+            df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
+            df = df.dropna(subset=['Rating'])
+            
+            # --- Subplot 1: Rating Distribution (Histogram) ---
+            ax1 = fig.add_subplot(121, facecolor=self.COLORS['bg_main'])
+            ax1.hist(df['Rating'], bins=np.arange(0.25, 5.5, 0.5), color=self.COLORS['accent'], edgecolor='black', alpha=0.8)
+            ax1.set_title("Your Rating Distribution", fontsize=12, color=self.COLORS['text_main'], pad=15)
+            ax1.set_xlabel("Stars", color=self.COLORS['text_sub'])
+            ax1.set_ylabel("Count", color=self.COLORS['text_sub'])
+            ax1.set_xticks(np.arange(0.5, 5.5, 0.5))
+            ax1.tick_params(colors=self.COLORS['text_sub'])
+            for spine in ax1.spines.values():
+                spine.set_color('#333333')
+
+            # --- Subplot 2: Top Genres (Bar Chart - if available) ---
+            ax2 = fig.add_subplot(122, facecolor=self.COLORS['bg_main'])
+            
+            if 'genres' in df.columns and df['genres'].notna().any():
+                # Process comma-separated genres
+                genres_series = df['genres'].dropna().str.split(',').explode().str.strip()
+                genre_counts = genres_series.value_counts().head(8) # Top 8
+                
+                # Horizontal Bar Chart
+                y_pos = np.arange(len(genre_counts))
+                bars = ax2.barh(y_pos, genre_counts.values, align='center', color=self.COLORS['success'], alpha=0.8)
+                ax2.set_yticks(y_pos, labels=genre_counts.index)
+                ax2.invert_yaxis()  # top genre at the top
+                ax2.set_title("Your Top Genres", fontsize=12, color=self.COLORS['text_main'], pad=15)
+                ax2.set_xlabel("Movies Watched", color=self.COLORS['text_sub'])
+                ax2.tick_params(colors=self.COLORS['text_sub'])
+            else:
+                ax2.text(0.5, 0.5, 'Genre data not available in export.', 
+                         horizontalalignment='center', verticalalignment='center',
+                         transform=ax2.transAxes, color=self.COLORS['text_sub'])
+                ax2.axis('off')
+
+            plt.tight_layout()
+            
+            # Embed in Tkinter
+            canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+            canvas.draw()
+            canvas.get_tk_widget().grid(row=0, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
+            
+        except Exception as e:
+            ctk.CTkLabel(chart_frame, text=f"Error generating charts: {e}", text_color=self.COLORS['danger']).pack(pady=50)
 
     def setup_results_tab(self, parent):
         parent.columnconfigure(0, weight=1) # List
@@ -436,7 +590,7 @@ class App(ctk.CTk):
         btn_frame = ctk.CTkFrame(self.res_preview, fg_color="transparent")
         btn_frame.grid(row=3, column=0, pady=20)
         
-        ctk.CTkButton(btn_frame, text="Mark as Seen", command=self._on_mark_as_seen, 
+        ctk.CTkButton(btn_frame, text="Log Movie", command=lambda: self._on_log_movie("res"), 
                       fg_color=self.COLORS['success'], hover_color="#00b3a1", width=120).pack(side="left", padx=10)
         
         ctk.CTkButton(btn_frame, text="View on TMDB", command=self._on_view_details, 
@@ -480,17 +634,110 @@ class App(ctk.CTk):
                                        fg_color="transparent", font=('Segoe UI', 11))
         self.log_text.grid(row=1, column=0, sticky="nsew", padx=20, pady=5)
         
-        ctk.CTkButton(log_preview, text="Add to History & Train", command=self._on_add_to_watched, 
+        ctk.CTkButton(log_preview, text="Log & Rate Movie", command=lambda: self._on_log_movie("log"), 
                       fg_color=self.COLORS['success'], hover_color="#00b3a1").grid(row=2, column=0, pady=20)
 
     def setup_console_tab(self, parent):
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1) # The textbox gets the weight
+        
+        # Action Bar
+        action_bar = ctk.CTkFrame(parent, fg_color="transparent")
+        action_bar.grid(row=0, column=0, sticky="ew", pady=(5, 10))
+        
+        ctk.CTkLabel(action_bar, text="System Log & AI Controls", font=self.header_font, text_color=self.COLORS['accent']).pack(side="left", padx=5)
+        
+        self.retrain_btn = ctk.CTkButton(action_bar, text="⚡ Retrain AI Model", command=self._on_retrain_ai, 
+                                         fg_color=self.COLORS['bg_card_hover'], hover_color=self.COLORS['accent'], 
+                                         height=30, width=150)
+        self.retrain_btn.pack(side="right", padx=5)
+
         self.console_output = ctk.CTkTextbox(parent, wrap=tk.WORD, font=('Consolas', 10), state='disabled', 
                                              fg_color=self.COLORS['bg_main'], text_color="#00FF00")
-        self.console_output.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.console_output.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
 
     # --- Event Handlers & Logic ---
+
+    def _on_skip_import(self):
+        user_csv_path = get_user_data_path('user_data/user_profile.csv')
+        os.makedirs(os.path.dirname(user_csv_path), exist_ok=True)
+        if not os.path.exists(user_csv_path):
+            with open(user_csv_path, 'w', newline='', encoding='utf-8') as f:
+                f.write('Name,Year,Rating\n')
+        
+        self.watched_path = user_csv_path
+        self._save_config(user_csv_path)
+        self.watchedSet_titles, self.watchedSet_ids, self.hated_movies = watchedMovies(user_csv_path, APP_MEMORY_FILE)
+        
+        self.show_main_app()
+
+    def _on_import_zip(self):
+        zip_path = filedialog.askopenfilename(title="Select your Letterboxd Export Zip", filetypes=(("Zip Files", "*.zip"),))
+        if not zip_path: return
+        
+        self.import_btn.configure(state="disabled", text="Processing...")
+        self.progress.pack(pady=10)
+        self.progress.set(0.1)
+        self.status_label.configure(text="Extracting & Fetching TMDB Data... (This takes a few minutes)")
+        
+        # Run ML Pipeline in background thread to keep UI responsive
+        threading.Thread(target=self._run_ml_pipeline, args=(zip_path,), daemon=True).start()
+
+    def _run_ml_pipeline(self, zip_path):
+        user_csv_path = get_user_data_path('user_data/user_profile.csv')
+        features_path = get_user_data_path('user_data/user_profile_features.csv')
+        
+        # Define the callback that hydrates the UI's progress bar (starts at 10% visually, scales to 60%)
+        def tmdb_progress(current, total):
+            if total > 0:
+                percent = current / total
+                # Map 0-100% TMDB fetch to 0.1->0.6 on the UI progress bar
+                ui_progress = 0.1 + (0.5 * percent)
+                self._update_onboard_status(f"Fetching TMDB Data: {current}/{total} movies...", progress=ui_progress)
+
+        # 1. Import
+        success = process_letterboxd_import(zip_path, output_csv_path=user_csv_path, progress_callback=tmdb_progress)
+        if not success:
+            self._update_onboard_status("Failed to import Zip. Check TMDB API key.", error=True)
+            return
+            
+        self._update_onboard_status("Data Hydrated! Engineering NLP Features...", progress=0.7)
+        
+        # 2. Feature Engineering
+        success = feature_engineering(input_file=user_csv_path, output_file=features_path, vectorizer_path=VECTORIZER_PATH)
+        if not success:
+            self._update_onboard_status("Failed to engineer features.", error=True)
+            return
+            
+        self._update_onboard_status("Features Created. Training Neural Pathways...", progress=0.85)
+        
+        # 3. Train Model
+        success = train_personal_model(input_file=features_path, model_path=MODEL_PATH, columns_path=COLUMNS_PATH)
+        if not success:
+            self._update_onboard_status("Failed to train model. Need at least 15 ratings.", error=True)
+            return
+            
+        self._update_onboard_status("AI Training Complete! Booting...", progress=1.0)
+        
+        # Reload Models and launch app
+        self.ai_model, self.ai_columns, self.ai_vectorizer = load_ai_model()
+        self.watched_path = user_csv_path
+        self._save_config(user_csv_path)
+        self.watchedSet_titles, self.watchedSet_ids, self.hated_movies = watchedMovies(user_csv_path, APP_MEMORY_FILE)
+        
+        # Back to main thread for UI changes
+        self.after(1500, self.show_main_app)
+
+    def _update_onboard_status(self, text, progress=None, error=False):
+        """Thread-safe UI updater"""
+        def update():
+            self.status_label.configure(text=text, text_color=self.COLORS['danger'] if error else self.COLORS['success'])
+            if progress is not None:
+                self.progress.set(progress)
+            if error:
+                self.import_btn.configure(state="normal", text="Try Again")
+                self.progress.pack_forget()
+        self.after(0, update)
 
     def _save_config(self, path):
         with open(CONFIG_FILE, 'w') as f: json.dump({'watched_path': path}, f)
@@ -511,7 +758,7 @@ class App(ctk.CTk):
             self.current_results.clear()
             self._clear_preview(self.res_poster, self.res_text, self.res_score)
             
-            mood = self.selected_mood_var.get()
+            mood = self.selected_mood_var.get().lower()
             ctx = self.context_var.get()
             
             if not mood: print("Error: Select mood."); return
@@ -639,37 +886,171 @@ class App(ctk.CTk):
         self._update_text(t, "")
         if score_label: score_label.configure(text="Select a movie...")
 
-    def _on_mark_as_seen(self):
-        if not getattr(self, 'selected_result_btn', None): return
-        m = self.current_results.get(self.selected_result_btn)
-        if m:
-            self._add_memory(m)
-            self.selected_result_btn.destroy()
-            self._clear_preview(self.res_poster, self.res_text, self.res_score)
+    def _on_log_movie(self, mode):
+        # 1. Determine selected movie based on tab
+        if mode == "res":
+            if not getattr(self, 'selected_result_btn', None): return
+            m = self.current_results.get(self.selected_result_btn)
+            btn_ref = self.selected_result_btn
+        else:
+            if not getattr(self, 'selected_search_btn', None): return
+            m = self.current_search_results.get(self.selected_search_btn)
+            btn_ref = self.selected_search_btn
+            
+        if not m: return
 
-    def _on_add_to_watched(self):
-        if not getattr(self, 'selected_search_btn', None): return
-        m = self.current_search_results.get(self.selected_search_btn)
-        if m:
-            self._add_memory(m)
-            self.selected_search_btn.destroy()
+        # 2. Build Custom Rating Dialog
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(f"Log: {m['title']}")
+        dialog.geometry("400x300")
+        dialog.configure(fg_color=self.COLORS['bg_card'])
+        dialog.attributes('-topmost', True)
+        dialog.grab_set()  # Focus exclusively on this window
+        
+        # Center Dialog
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - (dialog.winfo_width() // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        ctk.CTkLabel(dialog, text=f"How many stars for", font=('Segoe UI', 14), text_color=self.COLORS['text_sub']).pack(pady=(20, 5))
+        ctk.CTkLabel(dialog, text=m['title'], font=('Segoe UI', 18, 'bold'), text_color=self.COLORS['accent']).pack()
+        
+        # Rating Slider
+        rating_var = tk.DoubleVar(value=3.0)
+        
+        def update_label(value):
+            v_val = float(value)
+            rating_label.configure(text=f"Rating: {v_val:.1f} ★")
+
+        slider = ctk.CTkSlider(dialog, from_=0.5, to=5.0, number_of_steps=9, variable=rating_var, command=update_label,
+                               button_color=self.COLORS['accent'], button_hover_color=self.COLORS['accent_hover'],
+                               progress_color=self.COLORS['accent'])
+        slider.pack(pady=20, padx=40, fill="x")
+        
+        rating_label = ctk.CTkLabel(dialog, text="Rating: 3.0 ★", font=('Segoe UI', 16, 'bold'), text_color=self.COLORS['score_med'])
+        rating_label.pack()
+
+        def submit_log():
+            final_rating = rating_var.get()
+            self._process_movie_log(m, final_rating, btn_ref, mode)
+            dialog.destroy()
+
+        ctk.CTkButton(dialog, text="Save Log", command=submit_log, fg_color=self.COLORS['success'], hover_color="#00b3a1").pack(pady=20)
+
+    def _process_movie_log(self, m, rating, btn_ref, mode):
+        # Prevent double logging
+        if self.watchedSet_ids and m['id'] in self.watchedSet_ids: return
+        
+        # 1. Update in-memory sets instantly
+        title_norm = titleNormalize(m['title'])
+        if self.watchedSet_ids is None: self.watchedSet_ids = set()
+        
+        self.watchedSet_ids.add(m['id'])
+        self.watchedSet_titles.add(title_norm)
+        
+        # Immediate Veto for low ratings!
+        if rating <= 2.5:
+            self.hated_movies.add(title_norm)
+            print(f"Added {m['title']} to Veto List.")
+            
+        print(f"Logged '{m['title']}' with {rating} stars.")
+
+        # 2. Append to general memory (so it won't be recommended again)
+        try:
+            with open(APP_MEMORY_FILE, 'a', newline='', encoding='utf-8') as f:
+                f.write(f'{m["id"]},"{m["title"]}"\n')
+        except Exception as e:
+            print(f"Failed to save to memory file: {e}")
+
+        # 3. Append to Active Watched History for Machine Learning Models
+        year = m.get('release_date', 'N/A').split('-')[0]
+        try:
+            target_path = self.watched_path if self.watched_path else get_user_data_path('user_data/user_profile.csv')
+            
+            # Ensure directory exists just in case
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            
+            if os.path.exists(target_path):
+                # We need to maintain the format used by the personal ML pipeline: 
+                # Name/Title, Year, Rating (others can be blank or TMDB API fetching happens later)
+                with open(target_path, 'a', newline='', encoding='utf-8') as f:
+                    f.write(f'"{m["title"]}",{year},{rating}\n')
+                print(f"Saved to user dataset: {target_path}")
+            else:
+                # Create a barebones one if none exists
+                with open(target_path, 'w', newline='', encoding='utf-8') as f:
+                    f.write('Name,Year,Rating\n')
+                    f.write(f'"{m["title"]}",{year},{rating}\n')
+                print(f"Created and saved to new dataset: {target_path}")
+        except Exception as e:
+            print(f"Failed to save to watched history CSV: {e}")
+
+        # 4. Clean up UI
+        btn_ref.destroy()
+        if mode == "res":
+            self._clear_preview(self.res_poster, self.res_text, self.res_score)
+        else:
             self._clear_preview(self.log_poster, self.log_text)
+            
+        messagebox.showinfo("Logged", f"Saved {rating} ★ for '{m['title']}'")
+        
+        # 5. Continuous Learning Check
+        self.new_logs_count += 1
+        if self.new_logs_count >= 5:
+            if messagebox.askyesno("Retrain AI?", "You've logged 5 new movies! Would you like to retrain your Personal AI to learn from these new ratings?"):
+                self.new_logs_count = 0
+                self.notebook.set('System Log')
+                self._on_retrain_ai()
 
     def _on_view_details(self):
         if not getattr(self, 'selected_result_btn', None): return
         m = self.current_results.get(self.selected_result_btn)
         if m: webbrowser.open_new_tab(f"https://www.themoviedb.org/movie/{m['id']}")
 
-    def _add_memory(self, m):
-        if self.watchedSet_ids and m['id'] in self.watchedSet_ids: return
-        if self.watchedSet_ids: self.watchedSet_ids.add(m['id'])
-        else: self.watchedSet_ids = {m['id']}
-        try:
-            with open(APP_MEMORY_FILE, 'a', newline='', encoding='utf-8') as f:
-                f.write(f'{m["id"]},"{m["title"]}"\n')
-            print(f"Logged '{m['title']}'.")
-            messagebox.showinfo("Logged", f"Marked '{m['title']}' as watched.")
-        except: pass
+    def _on_retrain_ai(self):
+        if not self.watched_path or not os.path.exists(self.watched_path):
+            messagebox.showwarning("No Data", "No watched data available to train on.")
+            return
+            
+        self.retrain_btn.configure(state="disabled", text="Training...")
+        self.console_output.configure(state='normal')
+        self.console_output.insert(tk.END, "\n--- Initiating Personal AI Retraining Sequence ---\n")
+        self.console_output.see(tk.END)
+        self.console_output.configure(state='disabled')
+        
+        threading.Thread(target=self._run_retraining_thread, daemon=True).start()
+        
+    def _run_retraining_thread(self):
+        features_path = get_user_data_path('user_data/user_profile_features.csv')
+        
+        # 1. Feature Engineer
+        print("Extracting NLP Features & Updating Matrix...")
+        success = feature_engineering(input_file=self.watched_path, output_file=features_path, vectorizer_path=VECTORIZER_PATH)
+        
+        if success:
+            # 2. Train Model
+            print("Training Neural Decision Trees...")
+            train_success = train_personal_model(input_file=features_path, model_path=MODEL_PATH, columns_path=COLUMNS_PATH)
+            
+            if train_success:
+                print("✅ Retraining Complete! Reloading Neural Pathways...")
+                # 3. Reload into app memory safely
+                def reload():
+                    self.ai_model, self.ai_columns, self.ai_vectorizer = load_ai_model()
+                    self.retrain_btn.configure(state="normal", text="⚡ Retrain AI Model")
+                    messagebox.showinfo("Success", "AI successfully retrained on your latest taste profile!")
+                self.after(0, reload)
+                return
+                
+        # Handle Failure
+        def fail():
+            print("❌ Retraining failed. Check logs.")
+            self.retrain_btn.configure(state="normal", text="⚡ Retrain AI Model")
+            messagebox.showerror("Error", "Failed to retrain model. You may need more ratings.")
+        self.after(0, fail)
+
+    # Deprecated in favor of _process_movie_log
 
 # --- 5. Main Execution ---
 
@@ -688,18 +1069,7 @@ if __name__ == "__main__":
         except: pass
     
     if not w_path or not os.path.exists(w_path):
-        root_temp = ctk.CTk()
-        root_temp.withdraw()
-        w_path = filedialog.askopenfilename(title="Select watched.csv", filetypes=(("CSV","*.csv"),))
-        root_temp.destroy()
-        
-        if not w_path:
-            w_path = get_path('my_watched_movies.csv')
-            if not os.path.exists(w_path):
-                with open(w_path, 'w') as f: f.write("Name,Year,Rating\n")
-            print("Using fresh/empty history.")
-            
-        with open(CONFIG_FILE,'w') as f: json.dump({'watched_path':w_path}, f)
+        w_path = None
 
     t, i, h = watchedMovies(w_path, APP_MEMORY_FILE)
     

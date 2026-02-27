@@ -4,74 +4,64 @@ import joblib
 import os
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.feature_extraction.text import TfidfVectorizer
-from textblob import TextBlob
 
-# --- Configuration ---
-INPUT_FILE = 'dataset/V2ModelTrain_Cleaned.csv'
-OUTPUT_FILE = 'dataset/V2ModelTrain_ReadyForAI.csv'
-VECTORIZER_PATH = 'models/summary_vectorizer.pkl' # NEW: Save the "Translator"
-
-def feature_engineering():
-    print(f"Reading {INPUT_FILE}...")
+def feature_engineering(input_file='dataset/user_profile.csv', 
+                        output_file='dataset/user_profile_features.csv', 
+                        vectorizer_path='models/summary_vectorizer.pkl'):
+    """Transforms raw user profile data into ML-ready features."""
+    
+    print(f"Reading {input_file}...")
     try:
-        df = pd.read_csv(INPUT_FILE)
+        df = pd.read_csv(input_file)
     except FileNotFoundError:
-        print("File not found. Please run dataClean.py first.")
-        return
+        print(f"File not found: {input_file}. Please import your Letterboxd data first.")
+        return False
 
-    # 1. Encoding PG Ratings
-    print("Encoding PG Ratings...")
-    rating_map = {
-        'G': 0, 'TV-G': 0, 'PG': 1, 'TV-PG': 1,
-        'PG-13': 2, 'TV-14': 2, 'R': 3, 'TV-MA': 3,
-        'NC-17': 4, 'NR': 2, 'Unknown': 2
-    }
-    df['rating_encoded'] = df['pg_rating'].map(rating_map).fillna(2)
+    if 'Rating' not in df.columns:
+         print("Error: 'Rating' column missing. Models need user ratings to train.")
+         return False
 
-    # 2. Encoding Context (With Whom)
-    print("Encoding Context (With Whom)...")
-    context_dummies = pd.get_dummies(df['with_whom'], prefix='context')
-    df = pd.concat([df, context_dummies], axis=1)
+    # Rename Letterboxd column to standard ML target
+    df = df.rename(columns={'Rating': 'user_rating'})
 
-    # 3. Encoding Genres
+    # 1. Encoding Genres
     print("Encoding Genres...")
-    df['tag_list'] = df['tag'].fillna("").apply(lambda x: [t.strip() for t in str(x).split(',')])
+    df['genres'] = df['genres'].fillna("")
+    df['tag_list'] = df['genres'].apply(lambda x: [t.strip() for t in str(x).split(',') if t.strip()])
+    
     mlb = MultiLabelBinarizer()
     genre_matrix = mlb.fit_transform(df['tag_list'])
-    genre_df = pd.DataFrame(genre_matrix, columns=[f"genre_{g}" for g in mlb.classes_])
-    df = pd.concat([df, genre_df], axis=1)
+    # mlb.classes_ might be empty if no genres exist
+    if len(mlb.classes_) > 0:
+        genre_df = pd.DataFrame(genre_matrix, columns=[f"genre_{g}" for g in mlb.classes_])
+        df = pd.concat([df, genre_df], axis=1)
 
-    # 4. NEW: Encoding Summaries (TF-IDF)
-    # This teaches the AI to read the plot
+    # 2. Encoding Summaries (TF-IDF)
     print("Encoding Summaries (Reading the Plots)...")
+    df['overview'] = df['overview'].fillna("")
     
-    # Fill missing summaries
-    df['summary'] = df['summary'].fillna("")
-    
-    # Create the Vectorizer
-    # max_features=100 means it will learn the top 100 most important words from your library
-    # stop_words='english' removes boring words like "the", "and", "is"
+    # max_features=100 helps prevent overfitting on small datasets while keeping it lightweight
     tfidf = TfidfVectorizer(max_features=100, stop_words='english')
     
-    # Learn the vocabulary and transform the summaries
-    tfidf_matrix = tfidf.fit_transform(df['summary'])
-    
-    # Create a DataFrame for these new features
-    # Columns will look like: summary_space, summary_heist, summary_love
-    tfidf_df = pd.DataFrame(tfidf_matrix.toarray(), columns=[f"summary_{w}" for w in tfidf.get_feature_names_out()])
-    
-    # Attach to main dataframe
-    df = pd.concat([df, tfidf_df], axis=1)
-    
-    # SAVE THE VECTORIZER (Crucial for the App!)
-    if not os.path.exists('models'):
-        os.makedirs('models')
-    joblib.dump(tfidf, VECTORIZER_PATH)
-    print(f"✅ Saved Summary Vectorizer to '{VECTORIZER_PATH}'")
+    # Fit and transform
+    try:
+        tfidf_matrix = tfidf.fit_transform(df['overview'])
+        
+        # Only attach if vocabulary was actually learned
+        if len(tfidf.get_feature_names_out()) > 0:
+            tfidf_df = pd.DataFrame(tfidf_matrix.toarray(), columns=[f"summary_{w}" for w in tfidf.get_feature_names_out()])
+            df = pd.concat([df, tfidf_df], axis=1)
+            
+            # Save the Vectorizer
+            os.makedirs(os.path.dirname(vectorizer_path), exist_ok=True)
+            joblib.dump(tfidf, vectorizer_path)
+            print(f"✅ Saved Summary Vectorizer to '{vectorizer_path}'")
+    except ValueError:
+        print("Warning: Overview data empty or insufficient to build TF-IDF vocabulary.")
 
-    # 5. Cleanup
-    # We drop the raw text columns
-    drop_cols = ['summary', 'tag', 'with_whom', 'after_feel', 'pg_rating', 'tag_list', 'with_whom_original', 'year']
+    # 3. Cleanup
+    # Drop raw text or unused columns
+    drop_cols = ['Name', 'Title', 'Date', 'Letterboxd URI', 'genres', 'overview', 'tag_list', 'Year']
     drop_cols = [c for c in drop_cols if c in df.columns]
     
     final_df = df.drop(columns=drop_cols)
@@ -80,12 +70,17 @@ def feature_engineering():
     cols = [c for c in final_df.columns if c != 'user_rating'] + ['user_rating']
     final_df = final_df[cols]
 
-    final_df.to_csv(OUTPUT_FILE, index=False)
+    # Fill any remaining NaNs
+    final_df = final_df.fillna(0)
+
+    # Save
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    final_df.to_csv(output_file, index=False)
 
     print("\n✅ Success! Feature Engineering Complete.")
-    print(f"Saved to: {OUTPUT_FILE}")
+    print(f"Saved to: {output_file}")
     print(f"New Matrix Shape: {final_df.shape} (Rows, Features)")
-    print(f"Your AI now looks at {final_df.shape[1]} different features per movie!")
+    return True
 
 if __name__ == "__main__":
     feature_engineering()

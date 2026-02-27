@@ -6,3 +6,12 @@ temp.py
 dataset/
 models/
 config.json
+
+# Python caches and outputs
+__pycache__/
+build/
+dist/
+
+# App local data
+tmdb_cache.sqlite
+user_data/
