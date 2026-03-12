@@ -9,3 +9,4 @@ customtkinter
 Pillow
 requests-cache
 matplotlib
+google-generativeai
