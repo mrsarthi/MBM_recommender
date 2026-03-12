@@ -16,7 +16,6 @@ a = Analysis(
     binaries=[],
     datas=[
         ('.env', '.'), # Ensure TMDB key is packaged
-        ('models/', 'models/'), # Generic fallback models if needed
     ],
     hiddenimports=['requests_cache', 'requests_cache.backends.sqlite'],
     hookspath=[],
