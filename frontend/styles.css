@@ -1,5 +1,5 @@
 /* ================================================================
-   CINEAI — RAYCAST-STYLE DESIGN SYSTEM
+   MBMR — RAYCAST-STYLE DESIGN SYSTEM
    ================================================================ */
 
 :root {
@@ -854,4 +854,221 @@ body {
 .winner-meta { font-size: 11px; color: var(--accent); font-weight: 600; }
 .winner-pitch { font-size: 12px; color: var(--text2); line-height: 1.5; }
 .winner-actions { display: flex; gap: 8px; margin-top: 6px; }
+
+/* ---- RENDER WAKE-UP BANNER ---- */
+.wake-banner {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(20, 20, 20, 0.92);
+    border: 1px solid rgba(74, 222, 128, 0.4);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 20px rgba(74, 222, 128, 0.15);
+    backdrop-filter: blur(16px);
+    border-radius: var(--pill);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 1000;
+}
+.wake-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(74, 222, 128, 0.2);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+}
+.wake-text {
+    display: flex;
+    flex-direction: column;
+}
+.wake-text strong {
+    font-size: 12px;
+    color: #fff;
+}
+.wake-text span {
+    font-size: 10px;
+    color: var(--text3);
+}
+
+/* ---- ONBOARDING MODAL ---- */
+.onboarding-card {
+    width: 480px;
+    background: #181818;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 24px 60px rgba(0,0,0,0.8);
+}
+.onboard-brand {
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+}
+.onboard-step {
+    display: flex;
+    flex-direction: column;
+}
+.onboard-badge {
+    display: inline-block;
+    width: fit-content;
+    font-size: 10px;
+    font-weight: 800;
+    color: var(--accent);
+    background: var(--accent-bg);
+    padding: 3px 8px;
+    border-radius: 4px;
+    margin-bottom: 10px;
+    letter-spacing: 0.06em;
+}
+.onboard-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 6px;
+}
+.onboard-subtitle {
+    font-size: 12px;
+    color: var(--text2);
+    line-height: 1.5;
+}
+.onboard-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.onboard-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.onboard-label-row label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text2);
+}
+.onboard-link {
+    font-size: 11px;
+    color: var(--accent);
+    text-decoration: none;
+}
+.onboard-link:hover {
+    text-decoration: underline;
+}
+.onboard-input {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 12px;
+    color: #fff;
+    font-size: 13px;
+    outline: none;
+    font-family: var(--font);
+}
+.onboard-input:focus {
+    border-color: var(--accent);
+}
+
+/* ---- MOBILE RESPONSIVE SYSTEM (< 768px) ---- */
+@media (max-width: 768px) {
+    body {
+        overflow-y: auto;
+        height: 100%;
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+    .app-shell {
+        display: flex;
+        flex-direction: column;
+        height: auto;
+        min-height: 100vh;
+    }
+    .icon-rail {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 60px;
+        flex-direction: row;
+        justify-content: space-around;
+        padding: 0 10px;
+        padding-bottom: env(safe-area-inset-bottom);
+        z-index: 100;
+        background: rgba(18, 18, 18, 0.95);
+        backdrop-filter: blur(16px);
+        border-right: none;
+        border-top: 1px solid var(--border);
+    }
+    .rail-spacer { display: none; }
+    .rail-icon {
+        width: 44px;
+        height: 44px;
+    }
+    .main-content {
+        padding: 16px 14px 80px 14px;
+        overflow-y: visible;
+        height: auto;
+    }
+    .bottom-dock {
+        display: none;
+    }
+    .search-hero {
+        margin-bottom: 20px;
+    }
+    .vibes-strip {
+        overflow-x: auto;
+        padding-bottom: 6px;
+        scrollbar-width: none;
+    }
+    .vibes-strip::-webkit-scrollbar { display: none; }
+    .vibe { flex-shrink: 0; }
+    
+    .poster-grid {
+        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        gap: 12px;
+    }
+    .journal-stats {
+        gap: 20px;
+    }
+    .journal-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .j-search {
+        width: 100%;
+    }
+    .j-sort {
+        margin-left: 0;
+        width: 100%;
+    }
+    .taste-layout {
+        grid-template-columns: 1fr;
+        gap: 24px;
+    }
+    
+    /* Spotlight Drawer as Bottom Sheet on Mobile */
+    .spotlight-drawer {
+        width: 100%;
+        max-width: 100vw;
+        height: 85vh;
+        top: auto;
+        bottom: 0;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        border-radius: 20px 20px 0 0;
+        transform: translateY(100%);
+    }
+    .spotlight-overlay.open .spotlight-drawer {
+        transform: translateY(0);
+    }
+    .sp-backdrop-wrap {
+        height: 200px;
+    }
+    .modal-card {
+        width: 94vw;
+        max-height: 90vh;
+        overflow-y: auto;
+    }
+}
 

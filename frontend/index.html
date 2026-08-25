@@ -2,12 +2,15 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CineAI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0B0D11">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>MBMR — Mind-Bending Movie Recommender</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=3.0">
+    <link rel="stylesheet" href="styles.css?v=4.0">
 </head>
 <body>
 
@@ -206,7 +209,7 @@
     <!-- Bottom Dock -->
     <footer class="bottom-dock">
         <div class="dock-left">
-            <span class="dock-brand">✦ CineAI</span>
+            <span class="dock-brand">✦ MBMR</span>
         </div>
         <div class="dock-center">
             <span id="dock-label">Discover New Movies</span>
@@ -350,13 +353,68 @@
                 <button class="sync-btn" onclick="triggerRSSSync()"><span class="sync-icon">⚡</span><div><strong>1-Click Diary Sync</strong><span>Fetch latest reviews & diary watch logs</span></div></button>
                 <button class="sync-btn" onclick="triggerWatchlistSync()"><span class="sync-icon">🔖</span><div><strong>Sync Letterboxd Watchlist</strong><span>Pull saved movies from your public watchlist</span></div></button>
                 <button class="sync-btn" onclick="triggerRetrainAI()"><span class="sync-icon">🧠</span><div><strong>Retrain Personal AI Model</strong><span>Recalculate weights & director affinities</span></div></button>
-                <div id="sync-status-msg" class="sync-msg"></div>
+    <!-- Render Free Tier Wake-up Banner -->
+    <div id="render-wake-banner" class="wake-banner" style="display:none;">
+        <span class="wake-spinner"></span>
+        <div class="wake-text">
+            <strong>Waking up MBMR Engine...</strong>
+            <span>Render free tier instances sleep after inactivity. Spinning up (~30s)...</span>
+        </div>
+    </div>
+
+    <!-- Onboarding Modal (First Time Visitors) -->
+    <div id="onboarding-modal" class="modal-bg" style="display:none;" onclick="closeModalBg(event,'onboarding-modal')">
+        <div class="modal-card onboarding-card">
+            <div class="modal-head">
+                <div class="onboard-brand">✦ Welcome to MBMR</div>
+                <button class="modal-x" onclick="closeOnboardingModal()">✕</button>
+            </div>
+            <div class="modal-body onboard-body">
+                <!-- Step 1: Letterboxd Account -->
+                <div class="onboard-step" id="onboard-step-1">
+                    <div class="onboard-badge">STEP 1 OF 2</div>
+                    <h3 class="onboard-title">Personalize with Letterboxd</h3>
+                    <p class="onboard-subtitle">We will train a custom machine learning model on your ratings to predict what you'll love.</p>
+                    <div class="sync-input-row" style="margin: 16px 0;">
+                        <span class="sync-at">@</span>
+                        <input id="onboard-username" type="text" class="sync-user-field" placeholder="your_letterboxd_username" value="sarthi_watcher">
+                    </div>
+                    <button class="sp-btn primary" style="width:100%;" onclick="nextOnboardStep(2)">Next: API Keys →</button>
+                </div>
+                
+                <!-- Step 2: Private API Keys (Stored 100% in IndexedDB) -->
+                <div class="onboard-step" id="onboard-step-2" style="display:none;">
+                    <div class="onboard-badge">STEP 2 OF 2</div>
+                    <h3 class="onboard-title">Private API Keys (Local Storage)</h3>
+                    <p class="onboard-subtitle">Stored exclusively in your browser's IndexedDB. Never saved or stored on our servers.</p>
+                    
+                    <div class="onboard-field">
+                        <div class="onboard-label-row">
+                            <label>TMDB API Key (Free)</label>
+                            <a href="https://www.themoviedb.org/settings/api" target="_blank" class="onboard-link">Get Key ↗</a>
+                        </div>
+                        <input id="onboard-tmdb" type="password" class="onboard-input" placeholder="Enter TMDB API Key (optional if server configured)">
+                    </div>
+
+                    <div class="onboard-field" style="margin-top:10px;">
+                        <div class="onboard-label-row">
+                            <label>Google Gemini Key (Free AI Vibe Engine)</label>
+                            <a href="https://aistudio.google.com/" target="_blank" class="onboard-link">Get Key ↗</a>
+                        </div>
+                        <input id="onboard-gemini" type="password" class="onboard-input" placeholder="Enter Gemini Key (optional if server configured)">
+                    </div>
+
+                    <div style="display:flex;gap:10px;margin-top:16px;">
+                        <button class="sp-btn secondary" onclick="nextOnboardStep(1)">← Back</button>
+                        <button class="sp-btn primary" style="flex:1;" onclick="completeOnboarding()">Launch MBMR ✦</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
 </div>
 
-<script src="app.js?v=3.0"></script>
+<script src="app.js?v=4.0"></script>
 </body>
 </html>

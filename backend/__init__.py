@@ -1,1 +1,1 @@
-# CineAI Backend Package
+# MBMR (Mind-Bending Movie Recommender) Backend Package
