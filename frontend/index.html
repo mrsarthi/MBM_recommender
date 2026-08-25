@@ -340,7 +340,13 @@
         <div class="modal-card">
             <div class="modal-head"><h3>Letterboxd Synchronization Hub</h3><button class="modal-x" onclick="closeSyncModal()">✕</button></div>
             <div class="modal-body">
-                <p class="sync-desc">Connected profile: <strong>@sarthi_watcher</strong></p>
+                <div class="sync-user-box">
+                    <label class="sync-input-label" for="sync-user-input">Letterboxd Username</label>
+                    <div class="sync-input-row">
+                        <span class="sync-at">@</span>
+                        <input id="sync-user-input" type="text" class="sync-user-field" placeholder="username" value="sarthi_watcher">
+                    </div>
+                </div>
                 <button class="sync-btn" onclick="triggerRSSSync()"><span class="sync-icon">⚡</span><div><strong>1-Click Diary Sync</strong><span>Fetch latest reviews & diary watch logs</span></div></button>
                 <button class="sync-btn" onclick="triggerWatchlistSync()"><span class="sync-icon">🔖</span><div><strong>Sync Letterboxd Watchlist</strong><span>Pull saved movies from your public watchlist</span></div></button>
                 <button class="sync-btn" onclick="triggerRetrainAI()"><span class="sync-icon">🧠</span><div><strong>Retrain Personal AI Model</strong><span>Recalculate weights & director affinities</span></div></button>

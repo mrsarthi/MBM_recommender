@@ -12,6 +12,7 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 from backend.api import ThreadedHTTPServer, CineAIRequestHandler
+from backend.config import LETTERBOXD_USERNAME
 
 TEST_PORT = 9988
 BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
@@ -20,8 +21,9 @@ class TestCineAIAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.server = ThreadedHTTPServer(('127.0.0.1', TEST_PORT), CineAIRequestHandler)
-        cls.server_thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.server_thread.start()
+        cls.thread = threading.Thread(target=cls.server.serve_forever)
+        cls.thread.daemon = True
+        cls.thread.start()
         time.sleep(0.5)
 
     @classmethod
@@ -35,7 +37,7 @@ class TestCineAIAPI(unittest.TestCase):
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
-            self.assertEqual(data.get('username'), 'sarthi_watcher')
+            self.assertEqual(data.get('username'), LETTERBOXD_USERNAME)
             self.assertIn('total_films', data)
             self.assertIn('model_status', data)
 

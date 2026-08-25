@@ -16,6 +16,12 @@ TMDB_KEY = os.getenv('TMDB_key')
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
 
+LETTERBOXD_USERNAME = os.getenv('LETTERBOXD_USERNAME', 'sarthi_watcher')
+
+if not TMDB_KEY or TMDB_KEY == 'YOUR_TMDB_API_KEY_HERE':
+    print("[WARN] TMDB_key not set in .env. Search, posters, and ripple recommendations require a valid TMDB key.")
+    print("       Get a free TMDB API key at: https://www.themoviedb.org/settings/api")
+
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     try: sys.stdout.reconfigure(encoding='utf-8')
     except Exception: pass
@@ -30,7 +36,7 @@ if GEMINI_API_KEY and GEMINI_API_KEY != 'YOUR_GEMINI_API_KEY_HERE':
     except Exception as e:
         print(f"[WARN] Gemini init warning: {e}")
 else:
-    print("[WARN] GEMINI_API_KEY not set. Using mood mapping fallback.")
+    print("[INFO] GEMINI_API_KEY not set. Using local mood & genre heuristics fallback.")
 
 def get_user_data_path(filename):
     appdata = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'MBM_Recommender')

@@ -39,7 +39,11 @@ async function loadStatus() {
             document.getElementById('journal-total-count').textContent = d.total_films;
         }
         if (d.avg_rating) document.getElementById('journal-avg-rating').textContent = d.avg_rating;
-        if (d.username) document.getElementById('profile-user').textContent = `@${d.username}`;
+        if (d.username) {
+            document.getElementById('profile-user').textContent = `@${d.username}`;
+            const userInput = document.getElementById('sync-user-input');
+            if (userInput) userInput.value = d.username;
+        }
         if (d.watchlist_count !== undefined) {
             updateWatchlistBadge(d.watchlist_count);
         }
@@ -386,10 +390,11 @@ function logWinnerDirectly() {
 async function triggerWatchlistSync() {
     const btn = document.querySelector('.wl-sync-btn');
     if (btn) btn.textContent = '🔄 Syncing from Letterboxd...';
+    const username = document.getElementById('sync-user-input')?.value.trim() || 'sarthi_watcher';
     try {
         const res = await fetch(`${API}/api/watchlist/sync`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: 'sarthi_watcher' })
+            body: JSON.stringify({ username })
         });
         const d = await res.json();
         alert(d.message || 'Watchlist synced!');
@@ -699,8 +704,20 @@ async function submitLogMovie() {
 function openSyncModal() { document.getElementById('sync-modal').classList.add('open'); }
 function closeSyncModal() { document.getElementById('sync-modal').classList.remove('open'); }
 async function triggerRSSSync() {
-    const msg = document.getElementById('sync-status-msg'); msg.textContent = 'Syncing diary RSS...';
-    try { const d = await (await fetch(`${API}/api/sync_letterboxd`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:'sarthi_watcher'}) })).json(); msg.textContent = d.message || 'Done!'; loadStatus(); } catch { msg.textContent = 'Sync failed.'; }
+    const msg = document.getElementById('sync-status-msg');
+    msg.textContent = 'Syncing diary RSS...';
+    const username = document.getElementById('sync-user-input')?.value.trim() || 'sarthi_watcher';
+    try {
+        const d = await (await fetch(`${API}/api/sync_letterboxd`, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ username })
+        })).json();
+        msg.textContent = d.message || 'Done!';
+        loadStatus();
+    } catch {
+        msg.textContent = 'Sync failed.';
+    }
 }
 async function triggerRetrainAI() {
     const msg = document.getElementById('sync-status-msg'); msg.textContent = 'Retraining AI Model...';

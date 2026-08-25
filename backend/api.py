@@ -6,7 +6,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import pandas as pd
 
-from backend.config import BASE_DIR, PROFILE_PATH, APP_MEMORY_FILE, MODEL_PATH, COLUMNS_PATH, VECTORIZER_PATH, ENCODERS_PATH, TMDB_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE
+from backend.config import BASE_DIR, PROFILE_PATH, APP_MEMORY_FILE, MODEL_PATH, COLUMNS_PATH, VECTORIZER_PATH, ENCODERS_PATH, TMDB_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME
 from backend.predictions import load_ai, predict_movie_score, get_post_watch_recommendations, get_watch_providers
 from backend.gemini_client import interpret_query_with_ai
 from backend.recommender import analyze, load_watched_data, titleNormalize, http_session
@@ -113,7 +113,7 @@ class CineAIRequestHandler(SimpleHTTPRequestHandler):
         global ai_model
         model_status = "Ready" if ai_model else "Model not loaded"
         self._send_json({
-            'username': 'sarthi_watcher',
+            'username': LETTERBOXD_USERNAME,
             'total_films': total_films,
             'watchlist_count': len(watchlist_items),
             'avg_rating': avg_rating,
@@ -303,7 +303,7 @@ class CineAIRequestHandler(SimpleHTTPRequestHandler):
         self._send_json({'success': bool(winner), 'movie': winner, 'message': msg})
 
     def _handle_sync_watchlist(self, body):
-        username = body.get('username', 'sarthi_watcher')
+        username = (body.get('username') or '').strip() or LETTERBOXD_USERNAME
         ok, msg = sync_letterboxd_watchlist(username)
         self._send_json({'success': ok, 'message': msg})
 
@@ -349,7 +349,7 @@ class CineAIRequestHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_sync(self, body):
-        username = body.get('username', 'sarthi_watcher')
+        username = (body.get('username') or '').strip() or LETTERBOXD_USERNAME
         ok, msg = sync_rss(username)
         
         # Reload model
