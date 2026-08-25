@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="100%" height="100%">
+  <defs>
+    <!-- Background Dark Glow -->
+    <radialGradient id="bgGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#142820" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#0b0e14" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Neon Mood Pulse Gradient -->
+    <linearGradient id="moodWaveGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#22c55e"/>
+      <stop offset="35%" stop-color="#4ade80"/>
+      <stop offset="70%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+
+    <!-- Wave Glow Filter -->
+    <filter id="neonGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3.5" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background Base -->
+  <rect width="200" height="200" rx="36" fill="#080a0f"/>
+  <rect width="200" height="200" rx="36" fill="url(#bgGlow)"/>
+
+  <!-- Camera Body & Reels (Crisp White Lines) -->
+  <g stroke="#ffffff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Left Reel -->
+    <circle cx="72" cy="62" r="24"/>
+    <circle cx="72" cy="62" r="7" fill="#ffffff"/>
+    <circle cx="72" cy="46" r="3" fill="#ffffff"/>
+    <circle cx="85" cy="54" r="3" fill="#ffffff"/>
+    <circle cx="85" cy="70" r="3" fill="#ffffff"/>
+    <circle cx="72" cy="78" r="3" fill="#ffffff"/>
+    <circle cx="59" cy="70" r="3" fill="#ffffff"/>
+    <circle cx="59" cy="54" r="3" fill="#ffffff"/>
+
+    <!-- Right Reel -->
+    <circle cx="124" cy="62" r="24"/>
+    <circle cx="124" cy="62" r="7" fill="#ffffff"/>
+    <circle cx="124" cy="46" r="3" fill="#ffffff"/>
+    <circle cx="137" cy="54" r="3" fill="#ffffff"/>
+    <circle cx="137" cy="70" r="3" fill="#ffffff"/>
+    <circle cx="124" cy="78" r="3" fill="#ffffff"/>
+    <circle cx="111" cy="70" r="3" fill="#ffffff"/>
+    <circle cx="111" cy="54" r="3" fill="#ffffff"/>
+
+    <!-- Main Camera Housing Box -->
+    <rect x="48" y="86" width="94" height="60" rx="6" fill="#0e1219"/>
+
+    <!-- Viewfinder / Eyepiece on Back -->
+    <path d="M 48 98 L 36 94 L 36 112 L 48 108 Z"/>
+
+    <!-- Base Mount -->
+    <path d="M 80 146 L 80 156 L 110 156 L 110 146"/>
+  </g>
+
+  <!-- Aperture Cone / Lens (Right) -->
+  <g stroke="#ffffff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Outer Lens Ring -->
+    <circle cx="146" cy="116" r="20" fill="#0e1219"/>
+    <!-- Aperture Blades Inner -->
+    <circle cx="146" cy="116" r="14"/>
+    <path d="M 136 110 L 152 108 M 154 114 L 146 128 M 140 126 L 134 114"/>
+    <circle cx="146" cy="116" r="4" fill="#ffffff"/>
+  </g>
+
+  <!-- Glowing Mood Frequency Wave (Passing Through Center) -->
+  <path d="M 18 116 
+           L 44 116 
+           L 54 116 
+           Q 60 116 64 104
+           L 74 72 
+           L 84 148 
+           L 96 86 
+           L 106 132 
+           L 116 102 
+           Q 122 116 130 116 
+           L 182 116" 
+        fill="none" 
+        stroke="url(#moodWaveGrad)" 
+        stroke-width="5.5" 
+        stroke-linecap="round" 
+        stroke-linejoin="round" 
+        filter="url(#neonGlow)"/>
+
+  <!-- Inner High-Intensity Core Line -->
+  <path d="M 18 116 
+           L 44 116 
+           L 54 116 
+           Q 60 116 64 104
+           L 74 72 
+           L 84 148 
+           L 96 86 
+           L 106 132 
+           L 116 102 
+           Q 122 116 130 116 
+           L 182 116" 
+        fill="none" 
+        stroke="#ffffff" 
+        stroke-width="2" 
+        stroke-linecap="round" 
+        stroke-linejoin="round"
+        opacity="0.9"/>
+</svg>

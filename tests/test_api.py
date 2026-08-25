@@ -28,8 +28,11 @@ class TestCineAIAPI(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
+        try:
+            threading.Thread(target=cls.server.shutdown, daemon=True).start()
+            cls.server.server_close()
+        except Exception:
+            pass
 
     def test_01_api_status(self):
         url = f"{BASE_URL}/api/status"
@@ -37,7 +40,7 @@ class TestCineAIAPI(unittest.TestCase):
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
-            self.assertEqual(data.get('username'), LETTERBOXD_USERNAME)
+            self.assertEqual(data.get('username'), LETTERBOXD_USERNAME or 'guest')
             self.assertIn('total_films', data)
             self.assertIn('model_status', data)
 

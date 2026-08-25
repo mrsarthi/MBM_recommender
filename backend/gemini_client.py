@@ -61,8 +61,18 @@ def _fallback_mood_match(user_input):
     }
     text = user_input.lower()
     matched_genres = set()
+
+    # A TMDB genre named outright is the strongest possible signal. This was missing,
+    # so a plain "thriller" query fell through to the generic default below.
+    for g in VALID_GENRES:
+        gl = g.lower()
+        if gl in text or (gl + 's') in text:
+            matched_genres.add(g)
+    if 'sci-fi' in text or 'scifi' in text:
+        matched_genres.add('Science Fiction')
+
     for keyword, genres in fallback_map.items():
         if keyword in text:
             matched_genres.update(genres)
-    
+
     return list(matched_genres) if matched_genres else ['Action', 'Drama', 'Science Fiction']

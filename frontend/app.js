@@ -119,43 +119,6 @@ async function checkOnboarding() {
     }
 }
 
-function nextOnboardStep(step) {
-    const s1 = document.getElementById('onboard-step-1');
-    const s2 = document.getElementById('onboard-step-2');
-    if (s1 && s2) {
-        s1.style.display = step === 1 ? 'flex' : 'none';
-        s2.style.display = step === 2 ? 'flex' : 'none';
-    }
-}
-
-async function completeOnboarding() {
-    const username = document.getElementById('onboard-username')?.value.trim() || '';
-    const tmdb = document.getElementById('onboard-tmdb')?.value.trim();
-    const gemini = document.getElementById('onboard-gemini')?.value.trim();
-
-    if (username) await MBMRStorage.set('letterboxd_username', username);
-    if (tmdb) await MBMRStorage.set('tmdb_key', tmdb);
-    if (gemini) await MBMRStorage.set('gemini_key', gemini);
-    await MBMRStorage.set('mbmr_onboarded', 'true');
-
-    document.getElementById('onboarding-modal').style.display = 'none';
-    const syncInput = document.getElementById('sync-user-input');
-    if (syncInput && username) syncInput.value = username;
-    const profUser = document.getElementById('profile-user');
-    if (profUser) profUser.textContent = username ? `@${username}` : '@guest';
-
-    if (username) {
-        triggerRSSSync();
-    } else {
-        generateRecommendations();
-    }
-}
-
-function closeOnboardingModal() {
-    document.getElementById('onboarding-modal').style.display = 'none';
-    MBMRStorage.set('mbmr_onboarded', 'true');
-}
-
 async function loadStatus() {
     const wakeTimer = setTimeout(() => {
         const b = document.getElementById('render-wake-banner');
@@ -386,23 +349,55 @@ async function toggleWatchlistForCurrentSpotlight() {
     renderGrid(currentPicks);
 }
 
+function renderWatchlistSkeleton(count = 6) {
+    const grid = document.getElementById('watchlist-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+        const card = document.createElement('div');
+        card.className = 'poster-card skeleton';
+        card.innerHTML = `
+            <div class="skeleton-badge"></div>
+            <div class="skeleton-info">
+                <div class="skeleton-title"></div>
+                <div class="skeleton-sub"></div>
+            </div>
+        `;
+        grid.appendChild(card);
+    }
+}
+
 async function fetchWatchlist() {
     const stream = document.getElementById('wl-stream-select').value;
     const sort = document.getElementById('wl-sort-select').value;
     const url = `${API}/api/watchlist?cluster=${encodeURIComponent(currentWatchlistCluster)}&sort=${encodeURIComponent(sort)}&platform=${encodeURIComponent(stream)}`;
+    const dock = document.getElementById('dock-label');
+
+    renderWatchlistSkeleton(6);
+    if (dock) {
+        dock.innerHTML = `<span class="dock-loading"><span class="dock-spinner"></span> Curating your watchlist...</span>`;
+    }
 
     try {
         const res = await fetch(url);
         const data = await res.json();
         const items = data.watchlist || [];
         renderWatchlistGrid(items);
-        updateWatchlistBadge(data.total || items.length);
+        updateWatchlistBadge(data.total !== undefined ? data.total : items.length);
 
         if (items.length > 0) {
             const avg = (items.reduce((acc, m) => acc + (m.ai_score || 3.8), 0) / items.length).toFixed(1);
             document.getElementById('wl-avg-score').textContent = `${avg}★`;
+        } else {
+            document.getElementById('wl-avg-score').textContent = `—`;
         }
-    } catch(e) { console.error('Watchlist fetch error', e); }
+    } catch(e) { 
+        console.error('Watchlist fetch error', e); 
+        const grid = document.getElementById('watchlist-grid');
+        if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:var(--text3);">Failed to load watchlist.</div>';
+    } finally {
+        if (dock) dock.textContent = 'Your Curated Watchlist';
+    }
 }
 
 function setWatchlistCluster(el, cluster) {
@@ -523,21 +518,46 @@ function logWinnerDirectly() {
 
 async function triggerWatchlistSync() {
     const btn = document.querySelector('.wl-sync-btn');
-    if (btn) btn.textContent = '🔄 Syncing from Letterboxd...';
-    const username = document.getElementById('sync-user-input')?.value.trim() || 'sarthi_watcher';
+    const originalText = btn ? btn.innerHTML : '🔄 Sync Watchlist';
+    if (btn) btn.innerHTML = '<span class="spinner"></span> Syncing Watchlist...';
+    const msg = document.getElementById('sync-status-msg');
+    if (msg) msg.textContent = 'Scraping Letterboxd watchlist...';
+
+    const localUser = await MBMRStorage.get('letterboxd_username');
+    const inputUser = document.getElementById('sync-user-input')?.value.trim();
+    const username = inputUser || localUser || '';
+    const tmdb = await MBMRStorage.get('tmdb_key');
+
+    if (!username) {
+        if (msg) msg.textContent = 'Please enter your username first.';
+        if (btn) btn.innerHTML = originalText;
+        return;
+    }
+
+    renderWatchlistSkeleton(6);
     try {
         const res = await fetch(`${API}/api/watchlist/sync`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username })
+            body: JSON.stringify({ username, tmdb_key: tmdb })
         });
         const d = await res.json();
-        alert(d.message || 'Watchlist synced!');
-        loadWatchlistIds();
-        fetchWatchlist();
+        // The sync runs in the background; refreshing before it finishes shows stale data.
+        if (d.job_id) {
+            const final = await pollImportJob(d.job_id, (s) => {
+                if (msg) msg.textContent = `${s.progress || 0}% — ${s.message || 'Syncing...'}`;
+            });
+            if (msg) msg.textContent = final.message;
+        } else {
+            if (msg) msg.textContent = d.message || 'Watchlist synced!';
+        }
+        await loadStatus();
+        await loadWatchlistIds();
+        await fetchWatchlist();
     } catch(e) {
-        alert('Sync error.');
+        if (msg) msg.textContent = 'Sync error.';
+        fetchWatchlist();
     } finally {
-        if (btn) btn.textContent = '🔄 Sync Letterboxd Watchlist';
+        if (btn) btn.innerHTML = originalText;
     }
 }
 
@@ -644,13 +664,18 @@ function setDiaryRating(el, r) {
     el.classList.add('active'); diaryRating = r; fetchDiary();
 }
 
+// The diary API returns canonical `title`/`year`. Older CSV-backed responses used the
+// Letterboxd column names `Name`/`Year`, so both are accepted here.
+function diaryTitle(f) { return f.title || f.Name || 'Untitled'; }
+function diaryYear(f) { const y = f.year || f.Year; return y ? String(y).replace('.0', '') : ''; }
+
 function openSpotlightFromDiary(f) {
     const movieObj = {
         id: f.movie_id,
         movie_id: f.movie_id,
-        title: f.Name,
-        release_date: f.Year ? String(f.Year) : '',
-        year: f.Year ? String(f.Year) : '',
+        title: diaryTitle(f),
+        release_date: diaryYear(f),
+        year: diaryYear(f),
         poster_path: f.poster_path || '',
         backdrop_path: f.backdrop_path || f.poster_path || '',
         overview: f.overview || '',
@@ -684,14 +709,16 @@ function renderJournal(films) {
                 const stars = f.Rating ? fmtStars(f.Rating) : '<span style="color:var(--text3)">Unrated</span>';
                 const poster = f.poster_path ? `${IMG200}${f.poster_path}` : '';
                 const genres = f.genres || '';
+                const title = diaryTitle(f);
+                const year = diaryYear(f);
 
                 row.innerHTML = `
                     <div class="j-poster-wrap">
-                        ${poster ? `<img src="${poster}" alt="${f.Name}" class="j-poster" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;display:flex;align-items:center;justify-content:center;color:#555;font-size:10px;">🎬</div>'}
+                        ${poster ? `<img src="${poster}" alt="${title}" class="j-poster" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;display:flex;align-items:center;justify-content:center;color:#555;font-size:10px;">🎬</div>'}
                     </div>
                     <div class="j-date">${date}</div>
                     <div class="j-info">
-                        <div class="j-title">${f.Name}<span class="j-year">${f.Year ? '(' + f.Year + ')' : ''}</span></div>
+                        <div class="j-title">${title}<span class="j-year">${year ? '(' + year + ')' : ''}</span></div>
                         ${genres ? `<div class="j-genres">${genres}</div>` : ''}
                     </div>
                     <div class="j-stars">${stars}</div>
@@ -708,14 +735,15 @@ function renderJournal(films) {
                 card.onclick = () => openSpotlightFromDiary(f);
 
                 const poster = f.poster_path ? `${IMG500}${f.poster_path}` : '';
-                const year = f.Year || '';
+                const year = diaryYear(f);
+                const title = diaryTitle(f);
                 const rating = f.Rating ? parseFloat(f.Rating).toFixed(1) : '';
 
                 card.innerHTML = `
-                    ${poster ? `<img src="${poster}" alt="${f.Name}" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
+                    ${poster ? `<img src="${poster}" alt="${title}" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
                     ${rating ? `<span class="poster-badge journal-badge">★ ${rating}</span>` : ''}
                     <div class="poster-info">
-                        <div class="poster-name">${f.Name}</div>
+                        <div class="poster-name">${title}</div>
                         <div class="poster-sub">${year}${f.Date ? ' · Logged ' + fmtDate(f.Date) : ''}</div>
                     </div>
                 `;
@@ -839,21 +867,371 @@ function openSyncModal() { document.getElementById('sync-modal').classList.add('
 function closeSyncModal() { document.getElementById('sync-modal').classList.remove('open'); }
 async function triggerRSSSync() {
     const msg = document.getElementById('sync-status-msg');
-    msg.textContent = 'Syncing diary RSS...';
-    const username = document.getElementById('sync-user-input')?.value.trim() || 'sarthi_watcher';
+    if (msg) msg.textContent = 'Syncing diary RSS...';
+    
+    const localUser = await MBMRStorage.get('letterboxd_username');
+    const inputUser = document.getElementById('sync-user-input')?.value.trim();
+    const username = inputUser || localUser || '';
+    const tmdb = await MBMRStorage.get('tmdb_key');
+
+    if (!username) {
+        if (msg) msg.textContent = 'Please enter your username first.';
+        return;
+    }
+
     try {
         const d = await (await fetch(`${API}/api/sync_letterboxd`, {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ username })
+            body: JSON.stringify({ username, tmdb_key: tmdb })
         })).json();
-        msg.textContent = d.message || 'Done!';
-        loadStatus();
+        if (d.job_id) {
+            const final = await pollImportJob(d.job_id, (s) => {
+                if (msg) msg.textContent = `${s.progress || 0}% — ${s.message || 'Syncing...'}`;
+            });
+            if (msg) msg.textContent = final.message;
+        } else {
+            if (msg) msg.textContent = d.message || 'Done!';
+        }
+        await loadStatus();
+        await loadWatchlistIds();
+        await fetchWatchlist();
+        fetchDiary();
     } catch {
-        msg.textContent = 'Sync failed.';
+        if (msg) msg.textContent = 'Sync failed.';
     }
 }
 async function triggerRetrainAI() {
-    const msg = document.getElementById('sync-status-msg'); msg.textContent = 'Retraining AI Model...';
-    try { const d = await (await fetch(`${API}/api/retrain`, {method:'POST'})).json(); msg.textContent = d.message || 'Done!'; } catch { msg.textContent = 'Failed.'; }
+    const msg = document.getElementById('sync-status-msg');
+    if (msg) msg.textContent = 'Retraining AI Model in RAM...';
+
+    // The server needs to know which user's model to rebuild.
+    const localUser = await MBMRStorage.get('letterboxd_username');
+    const inputUser = document.getElementById('sync-user-input')?.value.trim();
+    const username = inputUser || localUser || '';
+    if (!username) {
+        if (msg) msg.textContent = 'Please enter your username first.';
+        return;
+    }
+
+    try {
+        const d = await (await fetch(`${API}/api/retrain`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username })
+        })).json();
+        if (msg) msg.textContent = d.message || 'Done!';
+        await loadStatus();
+    } catch {
+        if (msg) msg.textContent = 'Failed.';
+    }
 }
+
+// ── Onboarding & Multi-Device PIN Authentication ──
+
+function openOnboardingModal() {
+    const modal = document.getElementById('onboarding-modal');
+    if (modal) {
+        modal.style.display = 'flex';
+        modal.classList.add('open');
+    }
+}
+
+function closeOnboardingModal() {
+    const modal = document.getElementById('onboarding-modal');
+    if (modal) {
+        modal.style.display = 'none';
+        modal.classList.remove('open');
+    }
+}
+
+async function checkOnboarding() {
+    const user = await MBMRStorage.get('letterboxd_username');
+    if (!user || user === 'guest') {
+        openOnboardingModal();
+    } else {
+        const syncInput = document.getElementById('sync-user-input');
+        if (syncInput) syncInput.value = user;
+    }
+}
+
+function switchOnboardTab(tab) {
+    const btnSetup = document.getElementById('tab-btn-setup');
+    const btnLogin = document.getElementById('tab-btn-login');
+    const formSetup = document.getElementById('onboard-form-setup');
+    const formLogin = document.getElementById('onboard-form-login');
+
+    if (tab === 'setup') {
+        btnSetup?.classList.add('active');
+        btnLogin?.classList.remove('active');
+        if (formSetup) formSetup.style.display = 'block';
+        if (formLogin) formLogin.style.display = 'none';
+    } else {
+        btnLogin?.classList.add('active');
+        btnSetup?.classList.remove('active');
+        if (formLogin) formLogin.style.display = 'block';
+        if (formSetup) formSetup.style.display = 'none';
+    }
+}
+
+function nextOnboardStep(step) {
+    const s1 = document.getElementById('onboard-step-1');
+    const s2 = document.getElementById('onboard-step-2');
+    const u = document.getElementById('onboard-username')?.value.trim();
+
+    if (step === 2) {
+        if (!u) {
+            alert('Please enter your Letterboxd username.');
+            return;
+        }
+        if (s1) s1.style.display = 'none';
+        if (s2) s2.style.display = 'block';
+    } else if (step === 1) {
+        if (s2) s2.style.display = 'none';
+        if (s1) s1.style.display = 'block';
+    }
+}
+
+async function submitLoginProfile() {
+    const username = document.getElementById('login-username')?.value.trim();
+    const pin = document.getElementById('login-pin')?.value.trim();
+    const errEl = document.getElementById('login-error-msg');
+
+    if (!username) {
+        if (errEl) { errEl.textContent = 'Please enter your Letterboxd username.'; errEl.style.display = 'block'; }
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API}/api/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, pin })
+        });
+        const data = await res.json();
+        if (!data.success || !data.user) {
+            if (errEl) { errEl.textContent = data.message || 'Invalid PIN.'; errEl.style.display = 'block'; }
+            return;
+        }
+
+        // Save authenticated credentials locally
+        await MBMRStorage.set('letterboxd_username', data.user.username);
+        if (data.user.tmdb_key) await MBMRStorage.set('tmdb_key', data.user.tmdb_key);
+        if (data.user.gemini_key) await MBMRStorage.set('gemini_key', data.user.gemini_key);
+
+        const syncInput = document.getElementById('sync-user-input');
+        if (syncInput) syncInput.value = data.user.username;
+
+        closeOnboardingModal();
+        await loadStatus();
+        await loadWatchlistIds();
+        await fetchWatchlist();
+        generateRecommendations();
+    } catch(e) {
+        if (errEl) { errEl.textContent = 'Connection error. Please try again.'; errEl.style.display = 'block'; }
+    }
+}
+
+async function completeOnboarding() {
+    const username = document.getElementById('onboard-username')?.value.trim().replace(/^@/, '');
+    const pin = document.getElementById('onboard-pin')?.value.trim();
+    const tmdb = document.getElementById('onboard-tmdb')?.value.trim();
+    const gemini = document.getElementById('onboard-gemini')?.value.trim();
+
+    if (!username) {
+        alert('Please provide your Letterboxd username.');
+        return;
+    }
+
+    // Save locally
+    await MBMRStorage.set('letterboxd_username', username);
+    if (tmdb) await MBMRStorage.set('tmdb_key', tmdb);
+    if (gemini) await MBMRStorage.set('gemini_key', gemini);
+
+    const s2 = document.getElementById('onboard-step-2');
+    const sp = document.getElementById('onboard-progress');
+    if (s2) s2.style.display = 'none';
+    if (sp) sp.style.display = 'block';
+
+    const pTitle = document.getElementById('onboard-progress-title');
+    const pSub = document.getElementById('onboard-progress-sub');
+    const pFill = document.getElementById('onboard-progress-bar-fill');
+    const pPct = document.getElementById('onboard-pct-text');
+
+    try {
+        // Start async onboarding job
+        const startRes = await fetch(`${API}/api/onboarding/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, pin, tmdb_key: tmdb, gemini_key: gemini })
+        });
+        const startData = await startRes.json();
+        if (!startData.success || !startData.job_id) {
+            throw new Error(startData.message || 'Failed to start onboarding');
+        }
+
+        const jobId = startData.job_id;
+
+        // Poll job status until complete
+        const pollInterval = setInterval(async () => {
+            try {
+                const statusRes = await fetch(`${API}/api/onboarding/status?job_id=${jobId}`);
+                const statusData = await statusRes.json();
+
+                const pct = statusData.progress || 10;
+                if (pFill) pFill.style.width = `${pct}%`;
+                if (pPct) pPct.textContent = `${pct}%`;
+                if (pTitle) pTitle.textContent = statusData.message || 'Calibrating...';
+                if (pSub && statusData.stage) pSub.textContent = `Stage: ${statusData.stage}`;
+
+                if (statusData.status === 'completed') {
+                    clearInterval(pollInterval);
+                    if (pFill) pFill.style.width = '100%';
+                    if (pPct) pPct.textContent = '100%';
+                    setTimeout(async () => {
+                        closeOnboardingModal();
+                        const syncInput = document.getElementById('sync-user-input');
+                        if (syncInput) syncInput.value = username;
+                        await loadStatus();
+                        await loadWatchlistIds();
+                        await fetchWatchlist();
+                        generateRecommendations();
+                    }, 800);
+                } else if (statusData.status === 'failed') {
+                    clearInterval(pollInterval);
+                    alert(statusData.error || 'Onboarding encountered an issue.');
+                    closeOnboardingModal();
+                }
+            } catch (pollErr) {
+                console.error("Status poll error:", pollErr);
+            }
+        }, 800);
+
+    } catch (err) {
+        alert(`Onboarding error: ${err.message}`);
+        closeOnboardingModal();
+    }
+}
+
+// ── Letterboxd Full History CSV Upload Handlers ──
+
+// A full export runs as a background job (hundreds of TMDB lookups), so the upload
+// response only carries a job_id. Poll it until it settles.
+function pollImportJob(jobId, onProgress) {
+    return new Promise((resolve) => {
+        const timer = setInterval(async () => {
+            try {
+                const res = await fetch(`${API}/api/onboarding/status?job_id=${jobId}`);
+                const data = await res.json();
+
+                if (onProgress) onProgress(data);
+
+                if (data.status === 'completed') {
+                    clearInterval(timer);
+                    resolve({ success: true, message: data.message || 'Import complete!' });
+                } else if (data.status === 'failed' || data.status === 'not_found') {
+                    clearInterval(timer);
+                    resolve({ success: false, message: data.error || data.message || 'Import failed.' });
+                }
+            } catch (err) {
+                console.error('Import poll error:', err);
+            }
+        }, 1000);
+    });
+}
+
+async function handleOnboardCSVSelected(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const usernameInput = document.getElementById('onboard-username');
+    const username = usernameInput?.value.trim().replace(/^@/, '') || file.name.replace(/\.csv$/i, '');
+    if (!usernameInput.value.trim()) usernameInput.value = username;
+
+    const label = document.getElementById('onboard-csv-label');
+    if (label) label.innerHTML = `⏳ Reading <strong>${file.name}</strong>...`;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        const text = e.target.result;
+        if (label) label.innerHTML = `⚡ Uploading & calibrating AI on <strong>${file.name}</strong>...`;
+        try {
+            const res = await fetch(`${API}/api/import_csv`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: username,
+                    csv_content: text,
+                    is_watchlist: file.name.toLowerCase().includes('watchlist')
+                })
+            });
+            const data = await res.json();
+            if (!data.success || !data.job_id) {
+                if (label) label.innerHTML = `⚠️ ${data.message || 'Import error'}`;
+                return;
+            }
+
+            const final = await pollImportJob(data.job_id, (s) => {
+                if (label) label.innerHTML = `⚡ ${s.progress || 0}% — ${s.message || 'Importing...'}`;
+            });
+
+            if (final.success) {
+                if (label) label.innerHTML = `✓ <strong>${final.message}</strong>`;
+                await MBMRStorage.set('letterboxd_username', username);
+            } else {
+                if (label) label.innerHTML = `⚠️ ${final.message}`;
+            }
+        } catch(err) {
+            if (label) label.innerHTML = `⚠️ Upload failed. Please try again.`;
+        }
+    };
+    reader.readAsText(file);
+}
+
+async function handleSyncCSVSelected(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const localUser = await MBMRStorage.get('letterboxd_username');
+    const inputUser = document.getElementById('sync-user-input')?.value.trim();
+    const username = inputUser || localUser || file.name.replace(/\.csv$/i, '');
+
+    const msg = document.getElementById('sync-status-msg');
+    if (msg) msg.textContent = `Importing ${file.name}...`;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        const text = e.target.result;
+        try {
+            const res = await fetch(`${API}/api/import_csv`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: username,
+                    csv_content: text,
+                    is_watchlist: file.name.toLowerCase().includes('watchlist')
+                })
+            });
+            const data = await res.json();
+            if (!data.success || !data.job_id) {
+                if (msg) msg.textContent = data.message || 'CSV import failed.';
+                return;
+            }
+
+            const final = await pollImportJob(data.job_id, (s) => {
+                if (msg) msg.textContent = `${s.progress || 0}% — ${s.message || 'Importing...'}`;
+            });
+
+            if (msg) msg.textContent = final.message;
+            await loadStatus();
+            await loadWatchlistIds();
+            await fetchWatchlist();
+            if (typeof fetchDiary === 'function') fetchDiary();
+        } catch(err) {
+            if (msg) msg.textContent = 'CSV import failed.';
+        }
+    };
+    reader.readAsText(file);
+}
+
+

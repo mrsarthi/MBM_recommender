@@ -10,3 +10,4 @@ Pillow
 requests-cache
 matplotlib
 google-generativeai
+psycopg2-binary

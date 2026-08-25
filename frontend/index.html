@@ -7,10 +7,13 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>MBMR — Mood-Based Movie Recommender</title>
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+    <link rel="alternate icon" type="image/png" href="assets/logo.png">
+    <link rel="apple-touch-icon" href="assets/logo.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=4.0">
+    <link rel="stylesheet" href="styles.css?v=5.0">
 </head>
 <body>
 
@@ -18,6 +21,9 @@
 
     <!-- Left Icon Sidebar -->
     <aside class="icon-rail">
+        <div class="rail-logo" title="MBMR — Mood-Based Movie Recommender">
+            <img src="assets/logo.svg" alt="MBMR Logo" class="rail-logo-img">
+        </div>
         <button class="rail-icon active" data-view="discover" onclick="switchView('discover')" title="Discover (Search)">
             <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>
         </button>
@@ -352,6 +358,8 @@
                 </div>
                 <button class="sync-btn" onclick="triggerRSSSync()"><span class="sync-icon">⚡</span><div><strong>1-Click Diary Sync</strong><span>Fetch latest reviews & diary watch logs</span></div></button>
                 <button class="sync-btn" onclick="triggerWatchlistSync()"><span class="sync-icon">🔖</span><div><strong>Sync Letterboxd Watchlist</strong><span>Pull saved movies from your public watchlist</span></div></button>
+                <button class="sync-btn" onclick="document.getElementById('sync-csv-file').click()"><span class="sync-icon">📂</span><div><strong>Import Complete Lifetime Diary (CSV)</strong><span>Upload diary.csv or ratings.csv (all 700+ films)</span></div></button>
+                <input type="file" id="sync-csv-file" accept=".csv" style="display:none;" onchange="handleSyncCSVSelected(event)">
                 <button class="sync-btn" onclick="triggerRetrainAI()"><span class="sync-icon">🧠</span><div><strong>Retrain Personal AI Model</strong><span>Recalculate weights & director affinities</span></div></button>
                 <div id="sync-status-msg" class="sync-msg"></div>
             </div>
@@ -371,27 +379,68 @@
     <div id="onboarding-modal" class="modal-bg" style="display:none;" onclick="closeModalBg(event,'onboarding-modal')">
         <div class="modal-card onboarding-card">
             <div class="modal-head">
-                <div class="onboard-brand">✦ Welcome to MBMR</div>
+                <div class="onboard-brand">
+                    <img src="assets/logo.svg" alt="MBMR Logo" class="onboard-logo-img">
+                    <span>Welcome to MBMR</span>
+                </div>
                 <button class="modal-x" onclick="closeOnboardingModal()">✕</button>
             </div>
             <div class="modal-body onboard-body">
-                <!-- Step 1: Letterboxd Account -->
+                <!-- Step 1: Letterboxd Account & PIN -->
                 <div class="onboard-step" id="onboard-step-1">
-                    <div class="onboard-badge">STEP 1 OF 2</div>
-                    <h3 class="onboard-title">Personalize with Letterboxd</h3>
-                    <p class="onboard-subtitle">We will train a custom machine learning model on your ratings to predict what you'll love.</p>
-                    <div class="sync-input-row" style="margin: 16px 0;">
-                        <span class="sync-at">@</span>
-                        <input id="onboard-username" type="text" class="sync-user-field" placeholder="your_letterboxd_username" value="">
+                    <div style="display:flex;gap:8px;margin-bottom:12px;">
+                        <button id="tab-btn-setup" class="onboard-tab-btn active" onclick="switchOnboardTab('setup')">New Profile</button>
+                        <button id="tab-btn-login" class="onboard-tab-btn" onclick="switchOnboardTab('login')">Log In (Multi-Device)</button>
                     </div>
-                    <button class="sp-btn primary" style="width:100%;" onclick="nextOnboardStep(2)">Next: API Keys →</button>
+
+                    <div id="onboard-form-setup">
+                        <div class="onboard-badge">STEP 1 OF 2</div>
+                        <h3 class="onboard-title">Personalize with Letterboxd</h3>
+                        <p class="onboard-subtitle">Train an on-demand machine learning model on your ratings and sync safely to Neon Cloud DB.</p>
+                        <div class="sync-input-row" style="margin: 14px 0 10px;">
+                            <span class="sync-at">@</span>
+                            <input id="onboard-username" type="text" class="sync-user-field" placeholder="your_letterboxd_username" value="">
+                        </div>
+                        <div class="onboard-field" style="margin-bottom:12px;">
+                            <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Profile PIN (4-6 Digits)</label>
+                            <input id="onboard-pin" type="password" maxlength="6" class="onboard-input" placeholder="Create a PIN to access from phone or other devices">
+                        </div>
+
+                        <div class="onboard-or-divider" style="display:flex;align-items:center;gap:8px;margin:12px 0 8px;color:var(--text3);font-size:10px;font-weight:700;">
+                            <div style="flex:1;height:1px;background:var(--border);"></div>
+                            <span>OPTIONAL: FULL LIFETIME HISTORY</span>
+                            <div style="flex:1;height:1px;background:var(--border);"></div>
+                        </div>
+
+                        <div class="onboard-csv-box" onclick="document.getElementById('onboard-csv-file').click()" style="border:1px dashed rgba(255,255,255,0.2);border-radius:8px;padding:10px;text-align:center;cursor:pointer;background:var(--bg-hover);margin-bottom:14px;transition:all 0.2s;">
+                            <input type="file" id="onboard-csv-file" accept=".csv" style="display:none;" onchange="handleOnboardCSVSelected(event)">
+                            <div id="onboard-csv-label" style="font-size:11px;color:var(--text2);">📂 Upload Letterboxd <strong>diary.csv</strong> / <strong>ratings.csv</strong> (all 700+ films)</div>
+                        </div>
+
+                        <button class="sp-btn primary" style="width:100%;" onclick="nextOnboardStep(2)">Next: API Keys →</button>
+                    </div>
+
+                    <div id="onboard-form-login" style="display:none;">
+                        <h3 class="onboard-title">Welcome Back</h3>
+                        <p class="onboard-subtitle">Enter your Letterboxd username and PIN to unlock your cloud profile.</p>
+                        <div class="sync-input-row" style="margin: 14px 0 10px;">
+                            <span class="sync-at">@</span>
+                            <input id="login-username" type="text" class="sync-user-field" placeholder="your_letterboxd_username" value="">
+                        </div>
+                        <div class="onboard-field" style="margin-bottom:16px;">
+                            <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Your 4-6 Digit PIN</label>
+                            <input id="login-pin" type="password" maxlength="6" class="onboard-input" placeholder="Enter your PIN">
+                        </div>
+                        <div id="login-error-msg" style="color:#ef4444;font-size:12px;margin-bottom:10px;display:none;"></div>
+                        <button class="sp-btn primary" style="width:100%;" onclick="submitLoginProfile()">Log In to Profile ✦</button>
+                    </div>
                 </div>
                 
-                <!-- Step 2: Private API Keys (Stored 100% in IndexedDB) -->
+                <!-- Step 2: Private API Keys (Stored 100% in IndexedDB & Neon) -->
                 <div class="onboard-step" id="onboard-step-2" style="display:none;">
                     <div class="onboard-badge">STEP 2 OF 2</div>
-                    <h3 class="onboard-title">Private API Keys (Local Storage)</h3>
-                    <p class="onboard-subtitle">Stored exclusively in your browser's IndexedDB. Never saved or stored on our servers.</p>
+                    <h3 class="onboard-title">API Keys Configuration</h3>
+                    <p class="onboard-subtitle">Saved to your private account so you can access recommendations from any device.</p>
                     
                     <div class="onboard-field">
                         <div class="onboard-label-row">
@@ -414,12 +463,24 @@
                         <button class="sp-btn primary" style="flex:1;" onclick="completeOnboarding()">Launch MBMR ✦</button>
                     </div>
                 </div>
+
+                <!-- Step 3: Live Asynchronous Background Calibration Progress -->
+                <div class="onboard-step" id="onboard-progress" style="display:none;text-align:center;padding:12px 0;">
+                    <div class="onboard-spinner-large"></div>
+                    <h3 class="onboard-title" id="onboard-progress-title" style="margin-top:14px;">Calibrating Profile...</h3>
+                    <p class="onboard-subtitle" id="onboard-progress-sub">Syncing Letterboxd diary, watchlist and shared movies table</p>
+                    
+                    <div class="onboard-progress-bar-bg" style="margin:16px 0 8px;height:8px;background:#262626;border-radius:99px;overflow:hidden;">
+                        <div id="onboard-progress-bar-fill" style="width:10%;height:100%;background:linear-gradient(90deg, #22c55e, #06b6d4);transition:width 0.4s ease;"></div>
+                    </div>
+                    <div id="onboard-pct-text" style="font-size:12px;font-weight:700;color:var(--accent);">10%</div>
+                </div>
             </div>
         </div>
     </div>
 
 </div>
 
-<script src="app.js?v=4.0"></script>
+<script src="app.js?v=5.1"></script>
 </body>
 </html>

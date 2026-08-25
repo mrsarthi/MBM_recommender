@@ -1,9 +1,13 @@
-# ✦ MBMR — Mood-Based Movie Recommender & Letterboxd Companion
+<div align="center">
+  <img src="frontend/assets/logo.svg" alt="MBMR Logo" width="100" height="100" />
+  <h1>MBMR — Mood-Based Movie Recommender</h1>
+  <p><em>Your Personalized AI Cinema Intelligence & Letterboxd Companion</em></p>
+</div>
 
 [![Live App](https://img.shields.io/badge/Live%20App-mbmr.onrender.com-success?style=for-the-badge&logo=render)](https://mbmr.onrender.com)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: Passing](https://img.shields.io/badge/tests-35%20passed-brightgreen.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
 
 > **🌐 Try the Live Web App**: **[https://mbmr.onrender.com](https://mbmr.onrender.com)**
 
@@ -19,7 +23,8 @@
 - **🎲 "Pick For Me Tonight" Matchmaker**: Tell MBMR your available time and current mood, and let the AI pick the single best movie from your watchlist with a personalized pitch.
 - **📖 Visual Film Journal (Diary)**: Browse your entire watch history with high-resolution TMDB posters, dual view modes (**List View ≡** and **Poster Grid ⊞**), and rating filters.
 - **🎬 Cinema Spotlight Drawer**: Click any film to inspect its 4K backdrop, synopsis, streaming providers (Netflix, Prime, Apple TV, etc.), and **Post-Watch Ripple Recommendations**.
-- **⚡ 1-Click Letterboxd Sync**: Sync your public Letterboxd diary and watchlist with one click, or retrain your AI model anytime directly from the UI.
+- **⚡ 1-Click Letterboxd Sync**: Sync your public Letterboxd watchlist (all of it) and your 50 most recent diary entries with one click, or retrain your AI model anytime directly from the UI.
+- **📥 Full History via CSV Import**: Letterboxd blocks automated paging past the first page of a diary, so syncing can only reach your 50 most recent entries. To load your **complete** watch history, export your data from [Letterboxd → Settings → Import & Export → Export Your Data](https://letterboxd.com/settings/data/) and drop the `ratings.csv` (or `diary.csv` / `watchlist.csv`) onto the import control. Every film is matched against TMDB for posters, genres, cast and keywords, then your AI model recalibrates automatically.
 - **📱 Fully Responsive Mobile App & PWA**: Seamless experience across mobile phones, tablets, and desktops with bottom navigation dock, safe-area padding, and IndexedDB local client storage.
 
 ---

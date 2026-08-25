@@ -6,15 +6,19 @@ import requests
 import json
 import xml.etree.ElementTree as ET
 import pandas as pd
-from backend.config import PROFILE_PATH, get_base_dir
+from backend.config import PROFILE_PATH, get_base_dir, get_user_profile_path
 from backend.feature_engineering import feature_engineering
 from backend.model_train import train_personal_model
 
-def sync_rss(username="sarthi_watcher", profile_path=PROFILE_PATH):
+def sync_rss(username="", profile_path=None):
     """
-    Syncs the latest activity from Letterboxd RSS feed.
+    Syncs the latest activity from Letterboxd RSS feed for the specified user.
     """
-    clean_user = username.strip().lstrip('@')
+    clean_user = (username or '').strip().lstrip('@')
+    if not clean_user:
+        return False, "Letterboxd username is required."
+    if not profile_path:
+        profile_path = get_user_profile_path(clean_user)
     rss_url = f"https://letterboxd.com/{clean_user}/rss/"
     print(f"Fetching RSS from {rss_url}...")
     

@@ -4,7 +4,7 @@ import html
 import pandas as pd
 import requests
 from concurrent.futures import ThreadPoolExecutor
-from backend.config import WATCHLIST_PATH, TMDB_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE
+from backend.config import WATCHLIST_PATH, TMDB_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, get_user_watchlist_path
 from backend.predictions import predict_movie_score, get_watch_providers, load_ai
 from backend.recommender import titleNormalize, load_watched_data, http_session
 
@@ -23,7 +23,9 @@ def get_mood_cluster(genres_str, runtime_mins=0):
         clusters.append('Quick Watch')
     return clusters if clusters else ['General']
 
-def load_watchlist(watchlist_path=WATCHLIST_PATH, ai_model=None, ai_cols=None, ai_vec=None, ai_enc=None):
+def load_watchlist(watchlist_path=None, username=None, ai_model=None, ai_cols=None, ai_vec=None, ai_enc=None):
+    if not watchlist_path:
+        watchlist_path = get_user_watchlist_path(username)
     if not os.path.exists(watchlist_path) or os.path.getsize(watchlist_path) == 0:
         return []
 
@@ -80,7 +82,9 @@ def load_watchlist(watchlist_path=WATCHLIST_PATH, ai_model=None, ai_cols=None, a
 
     return records
 
-def add_to_watchlist(movie_data, watchlist_path=WATCHLIST_PATH):
+def add_to_watchlist(movie_data, watchlist_path=None, username=None):
+    if not watchlist_path:
+        watchlist_path = get_user_watchlist_path(username)
     movie_id = movie_data.get('id') or movie_data.get('movie_id')
     if not movie_id: return False, "Missing movie ID"
     
@@ -140,7 +144,9 @@ def add_to_watchlist(movie_data, watchlist_path=WATCHLIST_PATH):
     df.to_csv(watchlist_path, index=False)
     return True, f"Added '{title}' to Watchlist!"
 
-def remove_from_watchlist(movie_id, watchlist_path=WATCHLIST_PATH):
+def remove_from_watchlist(movie_id, watchlist_path=None, username=None):
+    if not watchlist_path:
+        watchlist_path = get_user_watchlist_path(username)
     if not os.path.exists(watchlist_path): return True, "Watchlist empty"
     try:
         df = pd.read_csv(watchlist_path)
@@ -153,8 +159,8 @@ def remove_from_watchlist(movie_id, watchlist_path=WATCHLIST_PATH):
     except Exception as e:
         return False, str(e)
 
-def pick_movie_for_tonight(params, ai_model=None, ai_cols=None, ai_vec=None, ai_enc=None, watchlist_path=WATCHLIST_PATH):
-    items = load_watchlist(watchlist_path=watchlist_path, ai_model=ai_model, ai_cols=ai_cols, ai_vec=ai_vec, ai_enc=ai_enc)
+def pick_movie_for_tonight(params, ai_model=None, ai_cols=None, ai_vec=None, ai_enc=None, watchlist_path=None, username=None):
+    items = load_watchlist(watchlist_path=watchlist_path, username=username, ai_model=ai_model, ai_cols=ai_cols, ai_vec=ai_vec, ai_enc=ai_enc)
     if not items:
         return None, "Your watchlist is currently empty. Add a few films first!"
 
@@ -177,7 +183,20 @@ def pick_movie_for_tonight(params, ai_model=None, ai_cols=None, ai_vec=None, ai_
         matched = [m for m in candidates if mood in m['clusters']]
         if matched: candidates = matched
 
-    # 3. Sort by predicted AI rating
+    # 3. Filter platform
+    if platform != 'All Platforms':
+        matched = []
+        for m in candidates:
+            provs = get_watch_providers(m['movie_id'])
+            if any(platform.lower() in p.lower() for p in provs):
+                m['providers'] = provs
+                matched.append(m)
+        if matched: candidates = matched
+
+    if not candidates:
+        return None, "No movies match your criteria tonight. Try broader filters!"
+
+    # 4. Sort by predicted AI rating
     candidates.sort(key=lambda x: (x.get('ai_score', 0), x.get('vote_average', 0)), reverse=True)
 
     winner = candidates[0]
@@ -194,8 +213,13 @@ def pick_movie_for_tonight(params, ai_model=None, ai_cols=None, ai_vec=None, ai_
     winner['providers'] = get_watch_providers(winner['movie_id'])
     return winner, "Match found!"
 
-def sync_letterboxd_watchlist(username="sarthi_watcher", watchlist_path=WATCHLIST_PATH):
-    clean_user = username.strip().lstrip('@')
+def sync_letterboxd_watchlist(username="", watchlist_path=None, tmdb_key=None):
+    clean_user = (username or '').strip().lstrip('@')
+    if not clean_user:
+        return False, "Letterboxd username is required."
+    if not watchlist_path:
+        watchlist_path = get_user_watchlist_path(clean_user)
+    tmdb_key = tmdb_key or TMDB_KEY
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'}
 
     genreDict = {
