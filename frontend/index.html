@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CineAI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css?v=3.0">
+</head>
+<body>
+
+<div id="app" class="app-shell">
+
+    <!-- Left Icon Sidebar -->
+    <aside class="icon-rail">
+        <button class="rail-icon active" data-view="discover" onclick="switchView('discover')" title="Discover (Search)">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>
+        </button>
+        <button class="rail-icon" data-view="watchlist" onclick="switchView('watchlist')" title="Watchlist">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+            <span id="rail-watchlist-badge" class="rail-badge" style="display:none;">0</span>
+        </button>
+        <button class="rail-icon" data-view="journal" onclick="switchView('journal')" title="Journal (History)">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="14" height="16" rx="2"/><line x1="7" y1="6" x2="13" y2="6"/><line x1="7" y1="10" x2="13" y2="10"/><line x1="7" y1="14" x2="10" y2="14"/></svg>
+        </button>
+        <button class="rail-icon" data-view="taste" onclick="switchView('taste')" title="Taste Radar">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="10,1 12.5,7 19,7.5 14,12 15.5,19 10,15.5 4.5,19 6,12 1,7.5 7.5,7"/></svg>
+        </button>
+        <div class="rail-spacer"></div>
+        <button class="rail-icon" onclick="openSyncModal()" title="Sync Letterboxd">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M19 16v-6h-6"/><path d="M3.5 14a8 8 0 0 0 13.9-2"/><path d="M16.5 6a8 8 0 0 0-13.9 2"/></svg>
+        </button>
+        <button class="rail-icon" onclick="openLogModal()" title="Rate & Log Film">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="7" r="4"/><path d="M2 19c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>
+        </button>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+
+        <!-- ===== 1. DISCOVER VIEW ===== -->
+        <section id="view-discover" class="view active">
+
+            <!-- Big Search Bar -->
+            <div class="search-zone">
+                <div class="search-bar">
+                    <input id="prompt-input" type="text" placeholder="Search any movie title, director, mood, or vibe..." autocomplete="off">
+                    <button id="generate-btn" class="search-go" onclick="generateRecommendations()">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Vibe Pills -->
+            <div class="vibe-row">
+                <span class="vibe active" onclick="setVibe(this,'Mind-Bending')">Mind-Bending</span>
+                <span class="vibe" onclick="setVibe(this,'Neo-Noir')">Neo-Noir</span>
+                <span class="vibe" onclick="setVibe(this,'Cyberpunk')">Cyberpunk</span>
+                <span class="vibe" onclick="setVibe(this,'Atmospheric')">Atmospheric</span>
+                <span class="vibe" onclick="setVibe(this,'Sci-Fi')">Sci-Fi</span>
+                <span class="vibe" onclick="setVibe(this,'Thriller')">Thriller</span>
+                <span class="vibe" onclick="setVibe(this,'Indie')">Indie</span>
+                <span class="vibe" onclick="setVibe(this,'Horror')">Horror</span>
+            </div>
+
+            <!-- Filter Row -->
+            <div class="filter-row">
+                <select id="context-select" onchange="generateRecommendations()">
+                    <option value="Alone">Context: Alone</option>
+                    <option value="With Partner">Context: With Partner</option>
+                    <option value="Friends Night">Context: Friends Night</option>
+                    <option value="Family">Context: Family</option>
+                </select>
+                <select id="stream-select" onchange="generateRecommendations()">
+                    <option value="All Platforms">All Streaming Platforms</option>
+                    <option value="Netflix">Netflix</option>
+                    <option value="Apple TV">Apple TV</option>
+                    <option value="Prime Video">Prime Video</option>
+                    <option value="Disney+">Disney+</option>
+                    <option value="Max">Max</option>
+                </select>
+            </div>
+
+            <!-- Film Cards Grid -->
+            <div id="films-grid" class="poster-grid"></div>
+        </section>
+
+        <!-- ===== 2. WATCHLIST VIEW ===== -->
+        <section id="view-watchlist" class="view">
+            <div class="watchlist-hero">
+                <div class="wl-hero-left">
+                    <button class="pick-tonight-btn" onclick="openPickTonightModal()">
+                        <span class="sparkle-icon">⚡</span>
+                        <div>
+                            <strong>Pick For Me Tonight</strong>
+                            <span>AI Decision Paralysis Solver</span>
+                        </div>
+                    </button>
+                    <div class="wl-stats">
+                        <div class="wl-stat-box"><span id="wl-count-num" class="wl-stat-num">0</span><span class="wl-stat-label">Saved</span></div>
+                        <div class="wl-stat-box"><span id="wl-avg-score" class="wl-stat-num">4.5★</span><span class="wl-stat-label">Avg Predicted</span></div>
+                    </div>
+                </div>
+                <div class="wl-hero-right">
+                    <button class="wl-sync-btn" onclick="triggerWatchlistSync()" title="Sync from Letterboxd Watchlist">
+                        <span>🔄 Sync Letterboxd Watchlist</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Mood Clusters & Filters -->
+            <div class="wl-clusters-row">
+                <div class="wl-cluster-chips">
+                    <span class="wl-chip active" onclick="setWatchlistCluster(this, 'All')">All Saved</span>
+                    <span class="wl-chip" onclick="setWatchlistCluster(this, 'Mind-Bending')">🧠 Mind-Bending</span>
+                    <span class="wl-chip" onclick="setWatchlistCluster(this, 'Late Night')">🌃 Late Night</span>
+                    <span class="wl-chip" onclick="setWatchlistCluster(this, 'Popcorn & Adrenaline')">🍿 Adrenaline</span>
+                    <span class="wl-chip" onclick="setWatchlistCluster(this, 'Comfort')">🛋️ Comfort</span>
+                    <span class="wl-chip" onclick="setWatchlistCluster(this, 'Quick Watch')">⏳ Quick (<105m)</span>
+                </div>
+
+                <div class="wl-filter-group">
+                    <select id="wl-stream-select" class="wl-select" onchange="fetchWatchlist()">
+                        <option value="All Platforms">All Platforms</option>
+                        <option value="Netflix">Netflix</option>
+                        <option value="Apple TV">Apple TV</option>
+                        <option value="Prime Video">Prime Video</option>
+                        <option value="Disney+">Disney+</option>
+                        <option value="Max">Max</option>
+                    </select>
+
+                    <select id="wl-sort-select" class="wl-select" onchange="fetchWatchlist()">
+                        <option value="Highest Predicted ★">Highest Predicted ★</option>
+                        <option value="Runtime (Shortest First)">Runtime (Shortest First)</option>
+                        <option value="Recently Added">Recently Added</option>
+                        <option value="TMDB Rating">TMDB Rating</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Watchlist Poster Grid -->
+            <div id="watchlist-grid" class="poster-grid"></div>
+        </section>
+
+        <!-- ===== 3. JOURNAL VIEW ===== -->
+        <section id="view-journal" class="view">
+            <div class="journal-header">
+                <div class="journal-stats">
+                    <div class="j-stat"><span class="j-num" id="journal-total-count">740</span><span class="j-label">Lifetime Films</span></div>
+                    <div class="j-stat"><span class="j-num" id="journal-avg-rating">3.62</span><span class="j-label">Avg ★</span></div>
+                </div>
+                <div class="journal-controls">
+                    <input id="diary-search" type="text" class="j-search" placeholder="Search your 740 watched films..." oninput="fetchDiary()">
+                    <div class="j-chips">
+                        <button class="j-chip active" onclick="setDiaryRating(this,'All')">All</button>
+                        <button class="j-chip" onclick="setDiaryRating(this,'5★ Only')">5★</button>
+                        <button class="j-chip" onclick="setDiaryRating(this,'4★+')">4★+</button>
+                        <button class="j-chip" onclick="setDiaryRating(this,'3★+')">3★+</button>
+                    </div>
+                    <select id="diary-sort" class="j-sort" onchange="fetchDiary()">
+                        <option value="Newest Log First">Newest First</option>
+                        <option value="Oldest Log First">Oldest First</option>
+                        <option value="Highest Rating">Highest ★</option>
+                        <option value="Lowest Rating">Lowest ★</option>
+                        <option value="Title A-Z">A → Z</option>
+                    </select>
+                    <div class="j-view-toggle">
+                        <button id="j-view-list-btn" class="j-toggle-btn active" onclick="setDiaryViewMode('list')" title="List View with Posters">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                        </button>
+                        <button id="j-view-grid-btn" class="j-toggle-btn" onclick="setDiaryViewMode('grid')" title="Poster Grid View">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div id="journal-list" class="journal-list"></div>
+            <div id="journal-grid" class="poster-grid" style="display:none;"></div>
+        </section>
+
+        <!-- ===== 4. TASTE RADAR VIEW ===== -->
+        <section id="view-taste" class="view">
+            <div class="taste-layout">
+                <div class="taste-chart-area">
+                    <h2 class="taste-title">Your Taste Radar</h2>
+                    <canvas id="radar-canvas" width="440" height="440"></canvas>
+                </div>
+                <div class="taste-badges-area">
+                    <h3 class="badges-title">Achievements</h3>
+                    <div id="badges-list" class="badges-list"></div>
+                    <div class="model-card">
+                        <span class="model-dot"></span>
+                        <div>
+                            <strong>Personal AI Model Active</strong>
+                            <p>120-tree Random Forest · ±0.60★ error</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Bottom Dock -->
+    <footer class="bottom-dock">
+        <div class="dock-left">
+            <span class="dock-brand">✦ CineAI</span>
+        </div>
+        <div class="dock-center">
+            <span id="dock-label">Discover New Movies</span>
+        </div>
+        <div class="dock-right">
+            <span class="dock-profile">
+                <span class="profile-dot"></span>
+                <span id="profile-user">@sarthi_watcher</span>
+                ·
+                <span id="nav-count">740</span> films
+            </span>
+        </div>
+    </footer>
+
+    <!-- Cinema Spotlight Drawer -->
+    <div id="spotlight-overlay" class="spotlight-overlay" onclick="closeSpotlightOnBg(event)">
+        <aside id="spotlight-drawer" class="spotlight-drawer">
+            <div class="sp-backdrop-wrap">
+                <img id="spotlight-backdrop-img" src="" alt="">
+                <div class="sp-gradient"></div>
+                <button class="sp-close" onclick="closeSpotlight()">✕</button>
+            </div>
+            <div class="sp-body">
+                <h1 id="spotlight-title" class="sp-title">Title</h1>
+                <div id="spotlight-meta" class="sp-meta">2017 · 2h 44m</div>
+                <div class="sp-match-row">
+                    <span class="sp-match-badge"><span class="sp-match-glyph">✦</span> <span id="spotlight-ai-score">98% Match</span></span>
+                </div>
+                <p id="spotlight-overview" class="sp-overview">Synopsis...</p>
+                <div class="sp-section">
+                    <span class="sp-section-label">STREAMING ON</span>
+                    <div id="spotlight-providers" class="sp-providers"></div>
+                </div>
+                <div class="sp-actions">
+                    <button id="spotlight-watchlist-toggle-btn" class="sp-btn secondary" onclick="toggleWatchlistForCurrentSpotlight()">🔖 Add to Watchlist</button>
+                    <button id="spotlight-log-btn" class="sp-btn primary" onclick="openLogForCurrentSpotlight()">⭐ Log Watch</button>
+                    <button id="spotlight-ripple-btn" class="sp-btn secondary" onclick="fetchRippleRecs()">🎲 Ripple Recs</button>
+                    <a id="spotlight-tmdb-link" href="#" target="_blank" class="sp-btn ghost">TMDB ↗</a>
+                </div>
+                <div id="ripple-section" class="ripple-section" style="display:none;">
+                    <span class="sp-section-label">POST-WATCH RIPPLES</span>
+                    <div id="ripple-grid" class="ripple-grid"></div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Pick For Me Tonight (AI Matchmaker Modal) -->
+    <div id="pick-tonight-modal" class="modal-bg" onclick="closeModalBg(event,'pick-tonight-modal')">
+        <div class="modal-card matchmaker-card">
+            <div class="modal-head">
+                <h3>⚡ Tonight's AI Matchmaker</h3>
+                <button class="modal-x" onclick="closePickTonightModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="matchmaker-form">
+                    <div class="form-row">
+                        <label>Time Available:</label>
+                        <select id="pick-duration" class="mm-select">
+                            <option value="Any">Any Duration</option>
+                            <option value="< 100 mins">Quick Watch (< 100 mins)</option>
+                            <option value="< 2 hours">Standard (< 2 hours)</option>
+                            <option value="2h+ Epic">Cinema Epic (2h+)</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <label>Vibe Tonight:</label>
+                        <select id="pick-mood" class="mm-select">
+                            <option value="Any">Surprise Me (Highest AI Affinity)</option>
+                            <option value="Mind-Bending">Mind-Bending (Sci-Fi / Thriller)</option>
+                            <option value="Late Night">Late Night (Atmospheric Drama)</option>
+                            <option value="Popcorn & Adrenaline">Adrenaline & Action</option>
+                            <option value="Comfort">Cozy & Comfort</option>
+                        </select>
+                    </div>
+                    <button class="roll-match-btn" onclick="executePickTonight()">🎲 Roll AI Match from Watchlist</button>
+                </div>
+
+                <!-- Result Card -->
+                <div id="pick-result-area" class="pick-result-area" style="display:none;">
+                    <div class="winner-poster-wrap">
+                        <img id="winner-poster" src="" alt="Winner">
+                        <span class="winner-badge">#1 Match Tonight</span>
+                    </div>
+                    <div class="winner-info">
+                        <h4 id="winner-title">Movie Title</h4>
+                        <div id="winner-meta" class="winner-meta">2024 · 1h 48m · ★ 4.7 Predicted</div>
+                        <p id="winner-pitch" class="winner-pitch">Personalized AI recommendation rationale...</p>
+                        <div class="winner-actions">
+                            <button class="sp-btn primary" onclick="openWinnerSpotlight()">▶ View & Play</button>
+                            <button class="sp-btn secondary" onclick="logWinnerDirectly()">⭐ Log Watch</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rate & Log Modal -->
+    <div id="log-modal" class="modal-bg" onclick="closeModalBg(event,'log-modal')">
+        <div class="modal-card">
+            <div class="modal-head"><h3>Rate & Log Film</h3><button class="modal-x" onclick="closeLogModal()">✕</button></div>
+            <div class="modal-body">
+                <div class="log-search-wrap">
+                    <input id="log-search-input" type="text" placeholder="Search film on TMDB..." oninput="searchTMDBLog(this.value)">
+                    <div id="log-search-dropdown" class="log-dropdown"></div>
+                </div>
+                <div id="selected-log-preview" class="log-preview">
+                    <img id="modal-log-poster" class="log-poster" src="" alt="">
+                    <div class="log-info">
+                        <h4 id="modal-log-title">Select a Movie</h4>
+                        <p id="modal-log-year" class="log-year"></p>
+                        <div class="slider-group">
+                            <label>Your Rating: <strong id="slider-val">4.5★</strong></label>
+                            <input id="rating-slider" type="range" min="0.5" max="5.0" step="0.5" value="4.5" oninput="updateSliderLabel(this.value)">
+                        </div>
+                    </div>
+                </div>
+                <div id="compare-verdict-card" class="compare-card">
+                    <div class="cmp-row"><span>AI Prediction:</span><strong id="modal-ai-pred">★ 4.2</strong></div>
+                    <div class="cmp-row"><span>Your Rating:</span><strong id="modal-user-rate" class="gold">★ 4.5</strong></div>
+                    <div id="modal-diff-pill" class="diff-pill">+0.3 Variance</div>
+                </div>
+                <button class="modal-submit" onclick="submitLogMovie()">Confirm & Log to Diary</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sync Modal -->
+    <div id="sync-modal" class="modal-bg" onclick="closeModalBg(event,'sync-modal')">
+        <div class="modal-card">
+            <div class="modal-head"><h3>Letterboxd Synchronization Hub</h3><button class="modal-x" onclick="closeSyncModal()">✕</button></div>
+            <div class="modal-body">
+                <div class="sync-user-box">
+                    <label class="sync-input-label" for="sync-user-input">Letterboxd Username</label>
+                    <div class="sync-input-row">
+                        <span class="sync-at">@</span>
+                        <input id="sync-user-input" type="text" class="sync-user-field" placeholder="username" value="sarthi_watcher">
+                    </div>
+                </div>
+                <button class="sync-btn" onclick="triggerRSSSync()"><span class="sync-icon">⚡</span><div><strong>1-Click Diary Sync</strong><span>Fetch latest reviews & diary watch logs</span></div></button>
+                <button class="sync-btn" onclick="triggerWatchlistSync()"><span class="sync-icon">🔖</span><div><strong>Sync Letterboxd Watchlist</strong><span>Pull saved movies from your public watchlist</span></div></button>
+                <button class="sync-btn" onclick="triggerRetrainAI()"><span class="sync-icon">🧠</span><div><strong>Retrain Personal AI Model</strong><span>Recalculate weights & director affinities</span></div></button>
+                <div id="sync-status-msg" class="sync-msg"></div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script src="app.js?v=3.0"></script>
+</body>
+</html>

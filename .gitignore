@@ -1,17 +1,42 @@
-*.csv
-*.env
+# Environments and Secrets
+.env
+.env.*
+!.env.example
+.venv/
 venv/
-output/
-temp.py
+env/
+ENV/
 dataset/
-models/
-config.json
 
-# Python caches and outputs
+# Python Bytecode and Cache
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local App Caching and Memory
+tmdb_cache.sqlite
+tmdb_cache.sqlite-shm
+tmdb_cache.sqlite-wal
+app_memory_ids.csv
+config.json
+dataset/temp_letterboxd/
+
+# Build and Distribution
 build/
 dist/
+*.egg-info/
+*.spec
 
-# App local data
-tmdb_cache.sqlite
-user_data/
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary and Scratch Files
+*.tmp
+*.log
+scratch/
