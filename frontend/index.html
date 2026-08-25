@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0B0D11">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>MBMR — Mind-Bending Movie Recommender</title>
+    <title>MBMR — Mood-Based Movie Recommender</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -151,11 +151,11 @@
         <section id="view-journal" class="view">
             <div class="journal-header">
                 <div class="journal-stats">
-                    <div class="j-stat"><span class="j-num" id="journal-total-count">740</span><span class="j-label">Lifetime Films</span></div>
-                    <div class="j-stat"><span class="j-num" id="journal-avg-rating">3.62</span><span class="j-label">Avg ★</span></div>
+                    <div class="j-stat"><span class="j-num" id="journal-total-count">0</span><span class="j-label">Lifetime Films</span></div>
+                    <div class="j-stat"><span class="j-num" id="journal-avg-rating">—</span><span class="j-label">Avg ★</span></div>
                 </div>
                 <div class="journal-controls">
-                    <input id="diary-search" type="text" class="j-search" placeholder="Search your 740 watched films..." oninput="fetchDiary()">
+                    <input id="diary-search" type="text" class="j-search" placeholder="Search your watched films..." oninput="fetchDiary()">
                     <div class="j-chips">
                         <button class="j-chip active" onclick="setDiaryRating(this,'All')">All</button>
                         <button class="j-chip" onclick="setDiaryRating(this,'5★ Only')">5★</button>
@@ -217,9 +217,9 @@
         <div class="dock-right">
             <span class="dock-profile">
                 <span class="profile-dot"></span>
-                <span id="profile-user">@sarthi_watcher</span>
+                <span id="profile-user">@guest</span>
                 ·
-                <span id="nav-count">740</span> films
+                <span id="nav-count">0</span> films
             </span>
         </div>
     </footer>
@@ -347,12 +347,17 @@
                     <label class="sync-input-label" for="sync-user-input">Letterboxd Username</label>
                     <div class="sync-input-row">
                         <span class="sync-at">@</span>
-                        <input id="sync-user-input" type="text" class="sync-user-field" placeholder="username" value="sarthi_watcher">
+                        <input id="sync-user-input" type="text" class="sync-user-field" placeholder="username" value="">
                     </div>
                 </div>
                 <button class="sync-btn" onclick="triggerRSSSync()"><span class="sync-icon">⚡</span><div><strong>1-Click Diary Sync</strong><span>Fetch latest reviews & diary watch logs</span></div></button>
                 <button class="sync-btn" onclick="triggerWatchlistSync()"><span class="sync-icon">🔖</span><div><strong>Sync Letterboxd Watchlist</strong><span>Pull saved movies from your public watchlist</span></div></button>
                 <button class="sync-btn" onclick="triggerRetrainAI()"><span class="sync-icon">🧠</span><div><strong>Retrain Personal AI Model</strong><span>Recalculate weights & director affinities</span></div></button>
+                <div id="sync-status-msg" class="sync-msg"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Render Free Tier Wake-up Banner -->
     <div id="render-wake-banner" class="wake-banner" style="display:none;">
         <span class="wake-spinner"></span>
@@ -377,7 +382,7 @@
                     <p class="onboard-subtitle">We will train a custom machine learning model on your ratings to predict what you'll love.</p>
                     <div class="sync-input-row" style="margin: 16px 0;">
                         <span class="sync-at">@</span>
-                        <input id="onboard-username" type="text" class="sync-user-field" placeholder="your_letterboxd_username" value="sarthi_watcher">
+                        <input id="onboard-username" type="text" class="sync-user-field" placeholder="your_letterboxd_username" value="">
                     </div>
                     <button class="sp-btn primary" style="width:100%;" onclick="nextOnboardStep(2)">Next: API Keys →</button>
                 </div>

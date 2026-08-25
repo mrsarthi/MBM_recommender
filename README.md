@@ -1,23 +1,38 @@
-# ✦ MBMR — Mind-Bending Movie Recommender & Letterboxd Companion
+# ✦ MBMR — Mood-Based Movie Recommender & Letterboxd Companion
 
+[![Live App](https://img.shields.io/badge/Live%20App-mbmr.onrender.com-success?style=for-the-badge&logo=render)](https://mbmr.onrender.com)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests: Passing](https://img.shields.io/badge/tests-35%20passed-brightgreen.svg)]()
 
-**MBMR** is a personalized AI-powered cinema recommendation engine and modern Letterboxd companion. It learns your unique film taste using a machine learning model trained on your Letterboxd diary, interprets natural language vibes with Google Gemini AI, clusters your watchlist, and predicts how much you will love any movie.
+> **🌐 Try the Live Web App**: **[https://mbmr.onrender.com](https://mbmr.onrender.com)**
+
+**MBMR (Mood-Based Movie Recommender)** is a personalized AI-powered cinema recommendation engine and modern Letterboxd companion. It learns your unique film taste using a machine learning model trained on your Letterboxd diary, interprets natural language vibes and moods with Google Gemini AI, clusters your watchlist, and predicts how much you will love any movie.
 
 ---
 
 ## ✨ Features
 
 - **🧠 Personal AI Taste Model**: Custom **Random Forest** regression model trained on your logged Letterboxd ratings, genres, directors, cast, and keyword affinities to predict your exact star rating (±0.6★ error).
-- **🎯 Hybrid Mood & Title Search**: Search for movie titles, directors, or natural language vibes (*"gritty 90s cyber thriller with neon aesthetics"*). Powered by Google Gemini AI with instant fallback heuristics.
+- **🎭 Mood-Based & Title Search**: Search for movie titles, directors, or natural language vibes (*"gritty 90s cyber thriller with neon aesthetics"*, *"melancholic coming-of-age on a rainy night"*). Powered by Google Gemini AI with instant fallback heuristics.
 - **🔖 Intelligent Watchlist with Mood Clusters**: Organize your Letterboxd watchlist into smart clusters (*🛋️ Comfort, 🧠 Mind-Bending, 🍿 Popcorn & Adrenaline, ⏳ Quick <105m*) with streaming platform filters.
 - **🎲 "Pick For Me Tonight" Matchmaker**: Tell MBMR your available time and current mood, and let the AI pick the single best movie from your watchlist with a personalized pitch.
 - **📖 Visual Film Journal (Diary)**: Browse your entire watch history with high-resolution TMDB posters, dual view modes (**List View ≡** and **Poster Grid ⊞**), and rating filters.
 - **🎬 Cinema Spotlight Drawer**: Click any film to inspect its 4K backdrop, synopsis, streaming providers (Netflix, Prime, Apple TV, etc.), and **Post-Watch Ripple Recommendations**.
 - **⚡ 1-Click Letterboxd Sync**: Sync your public Letterboxd diary and watchlist with one click, or retrain your AI model anytime directly from the UI.
-- **📱 Fully Responsive Mobile App & PWA**: Seamless experience across mobile phones, tablets, and desktops with bottom navigation bar, safe-area padding, and IndexedDB local client storage.
+- **📱 Fully Responsive Mobile App & PWA**: Seamless experience across mobile phones, tablets, and desktops with bottom navigation dock, safe-area padding, and IndexedDB local client storage.
+
+---
+
+## 🌐 Live Web App
+
+MBMR is deployed and ready to use at:
+👉 **[https://mbmr.onrender.com](https://mbmr.onrender.com)**
+
+When you visit for the first time:
+1. The **MBMR Onboarding Wizard** will prompt you to enter your **Letterboxd Username** (`@handle`).
+2. Optionally enter your own free **TMDB** and **Google Gemini** API keys.
+3. All credentials and preferences are **stored 100% locally in your browser (IndexedDB)** — your data remains private and is never stored on the server.
 
 ---
 
@@ -40,7 +55,7 @@ pip install -r requirements.txt
 uv sync
 ```
 
-### 3. Configure API Keys
+### 3. Configure API Keys (Optional for Local Development)
 Copy the example environment template:
 ```bash
 # On Linux/macOS:
@@ -66,49 +81,35 @@ LETTERBOXD_USERNAME=your_username
 ```bash
 python run.py
 ```
-Open **[http://127.0.0.1:8899](http://127.0.0.1:8899)** in your web browser.
+Open **[http://localhost:8899](http://localhost:8899)** in your web browser.
 
 ---
 
-## ☁️ Deploying to Render (Free Tier Step-by-Step)
+## ☁️ Deploying to Render (Free Tier)
 
-You can host MBMR for free on **Render** so you and your friends can access it from any phone or browser 24/7:
+You can host your own instance of MBMR on **Render**:
 
 1. **Push your code to GitHub**:
-   Make sure your repo is pushed to GitHub (`git push origin main` or `tester`).
+   ```bash
+   git push origin main
+   ```
 
 2. **Create a Free Web Service on Render**:
    - Go to [dashboard.render.com](https://dashboard.render.com/) and click **New + → Web Service**.
    - Connect your GitHub repository (`MBM_recommender`).
 
 3. **Configure the Service Settings**:
-   - **Name**: `mbmr` (or your preferred name)
-   - **Language / Runtime**: `Python 3`
-   - **Branch**: `main` (or your active branch)
-   - **Region**: Closest to you (e.g. `Frankfurt`, `Oregon`, `Singapore`)
-   - **Build Command**:
-     ```bash
-     pip install -r requirements.txt
-     ```
-   - **Start Command**:
-     ```bash
-     python run.py
-     ```
+   - **Name**: `mbmr`
+   - **Runtime**: `Python 3`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python run.py`
    - **Plan**: `Free`
 
-4. **Add Environment Variables** (under *Advanced / Environment Variables*):
-   - `TMDB_key` = *(Your TMDB API Key)*
-   - `GEMINI_API_KEY` = *(Your Gemini API Key)*
-   - `LETTERBOXD_USERNAME` = `sarthi_watcher` (or your username)
-   - `PYTHONUNBUFFERED` = `1`
-
-5. **Deploy**:
-   - Click **Create Web Service**.
-   - Render will build and deploy your app in ~1-2 minutes.
-   - Your permanent mobile-friendly URL will be ready at: `https://mbmr-xxxx.onrender.com`!
+4. **Environment Variables**:
+   - *Leave empty!* MBMR uses client-side IndexedDB onboarding so each visitor provides and securely stores their own keys locally in their browser.
 
 > [!TIP]
-> **Preventing Render Free-Tier Sleeping**: Render's free tier spins down after 15 minutes of inactivity. You can use a free 10-minute ping monitor like [cron-job.org](https://cron-job.org) or [UptimeRobot](https://uptimerobot.com) pointing to `https://your-app.onrender.com/api/status` to keep your instance warm.
+> **Preventing Render Free-Tier Sleeping**: Render's free tier spins down after 15 minutes of inactivity. You can use a free 10-minute ping monitor like [cron-job.org](https://cron-job.org) or [UptimeRobot](https://uptimerobot.com) pointing to `https://mbmr.onrender.com/api/status` to keep your instance warm 24/7.
 
 ---
 
@@ -117,28 +118,16 @@ You can host MBMR for free on **Render** so you and your friends can access it f
 1. **TMDB API Key (The Movie Database)**:
    - Create a free account at [themoviedb.org](https://www.themoviedb.org/).
    - Go to **Settings → API** and generate a Developer API key.
-   - Set `TMDB_key=your_key` in `.env` or during in-app onboarding.
 
 2. **Google Gemini API Key**:
    - Go to [Google AI Studio](https://aistudio.google.com/).
-   - Click **Get API Key** and create a free key.
-   - Set `GEMINI_API_KEY=your_key` in `.env` or during in-app onboarding.
-
----
-
-## 🔄 Personalizing with Your Own Letterboxd Account
-
-1. Launch MBMR in your browser.
-2. If visiting for the first time, the **MBMR Onboarding Wizard** will automatically guide you.
-3. Enter your **Letterboxd Username** (`@your_username`).
-4. Click **"1-Click Diary Sync"** to pull your watched history, or **"Sync Letterboxd Watchlist"** to import your watchlist.
-5. Click **"Retrain Personal AI Model"** — MBMR will perform TF-IDF feature engineering and fit your personalized Random Forest model in seconds!
+   - Click **Get API Key** and generate a free API key.
 
 ---
 
 ## 🧪 Running Automated Tests
 
-MBMR comes with a comprehensive automated test suite covering API endpoints, recommendation filters, Gemini query expansion, title search, watchlist clustering, and diary poster hydration:
+MBMR includes a comprehensive test suite covering API endpoints, recommendation filters, Gemini query expansion, title search, watchlist clustering, and diary poster hydration:
 
 ```bash
 python -m unittest discover tests

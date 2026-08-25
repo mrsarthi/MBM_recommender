@@ -26,7 +26,7 @@ if __name__ == "__main__":
         except Exception: pass
 
     print("=" * 60)
-    print(f">> Starting MBMR (Mind-Bending Movie Recommender) on port {PORT}...")
+    print(f">> Starting MBMR (Mood-Based Movie Recommender) on port {PORT}...")
     print("=" * 60)
     
     # Launch browser only on local interactive environments

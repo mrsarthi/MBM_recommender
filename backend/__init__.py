@@ -1,1 +1,1 @@
-# MBMR (Mind-Bending Movie Recommender) Backend Package
+# MBMR (Mood-Based Movie Recommender) Backend Package

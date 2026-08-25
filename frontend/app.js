@@ -129,22 +129,26 @@ function nextOnboardStep(step) {
 }
 
 async function completeOnboarding() {
-    const username = document.getElementById('onboard-username')?.value.trim() || 'sarthi_watcher';
+    const username = document.getElementById('onboard-username')?.value.trim() || '';
     const tmdb = document.getElementById('onboard-tmdb')?.value.trim();
     const gemini = document.getElementById('onboard-gemini')?.value.trim();
 
-    await MBMRStorage.set('letterboxd_username', username);
+    if (username) await MBMRStorage.set('letterboxd_username', username);
     if (tmdb) await MBMRStorage.set('tmdb_key', tmdb);
     if (gemini) await MBMRStorage.set('gemini_key', gemini);
     await MBMRStorage.set('mbmr_onboarded', 'true');
 
     document.getElementById('onboarding-modal').style.display = 'none';
     const syncInput = document.getElementById('sync-user-input');
-    if (syncInput) syncInput.value = username;
+    if (syncInput && username) syncInput.value = username;
     const profUser = document.getElementById('profile-user');
-    if (profUser) profUser.textContent = `@${username}`;
+    if (profUser) profUser.textContent = username ? `@${username}` : '@guest';
 
-    generateRecommendations();
+    if (username) {
+        triggerRSSSync();
+    } else {
+        generateRecommendations();
+    }
 }
 
 function closeOnboardingModal() {
@@ -164,21 +168,17 @@ async function loadStatus() {
         const b = document.getElementById('render-wake-banner');
         if (b) b.style.display = 'none';
 
-        if (d.total_films) {
-            document.getElementById('nav-count').textContent = d.total_films;
-            document.getElementById('journal-total-count').textContent = d.total_films;
-        }
-        if (d.avg_rating) document.getElementById('journal-avg-rating').textContent = d.avg_rating;
+        document.getElementById('nav-count').textContent = d.total_films || 0;
+        document.getElementById('journal-total-count').textContent = d.total_films || 0;
+        document.getElementById('journal-avg-rating').textContent = d.avg_rating ? `${d.avg_rating}★` : '—';
         
         const localUser = await MBMRStorage.get('letterboxd_username');
-        const activeUser = localUser || d.username || 'sarthi_watcher';
+        const activeUser = localUser || d.username || 'guest';
         document.getElementById('profile-user').textContent = `@${activeUser}`;
         const userInput = document.getElementById('sync-user-input');
-        if (userInput) userInput.value = activeUser;
+        if (userInput) userInput.value = activeUser === 'guest' ? '' : activeUser;
 
-        if (d.watchlist_count !== undefined) {
-            updateWatchlistBadge(d.watchlist_count);
-        }
+        updateWatchlistBadge(d.watchlist_count || 0);
     } catch(e) {
         console.warn('Status fetch failed (server waking up)', e);
     }

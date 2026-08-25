@@ -16,7 +16,7 @@ TMDB_KEY = os.getenv('TMDB_key')
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
 
-LETTERBOXD_USERNAME = os.getenv('LETTERBOXD_USERNAME', 'sarthi_watcher')
+LETTERBOXD_USERNAME = os.getenv('LETTERBOXD_USERNAME', '')
 
 if not TMDB_KEY or TMDB_KEY == 'YOUR_TMDB_API_KEY_HERE':
     print("[WARN] TMDB_key not set in .env. Search, posters, and ripple recommendations require a valid TMDB key.")
