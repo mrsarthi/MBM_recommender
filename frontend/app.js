@@ -1,5 +1,5 @@
 // ================================================================
-// CINEAI — RAYCAST-STYLE CONTROLLER WITH WATCHLIST & MATCHMAKER
+// MBMR — RAYCAST-STYLE CONTROLLER WITH WATCHLIST & MATCHMAKER
 // ================================================================
 
 const API = window.location.origin;
@@ -14,8 +14,85 @@ let watchlistIds = new Set();
 let currentMatchmakerWinner = null;
 let currentWatchlistCluster = 'All';
 
+// ── IndexedDB Storage for Private Credentials & Offline State ──
+const MBMRStorage = {
+    dbName: 'mbmr_local_db',
+    dbVersion: 1,
+    db: null,
+
+    async init() {
+        return new Promise((resolve) => {
+            if (!window.indexedDB) { resolve(null); return; }
+            const req = indexedDB.open(this.dbName, this.dbVersion);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains('settings')) {
+                    db.createObjectStore('settings', { keyPath: 'key' });
+                }
+            };
+            req.onsuccess = (e) => {
+                this.db = e.target.result;
+                resolve(this.db);
+            };
+            req.onerror = () => resolve(null);
+        });
+    },
+
+    async get(key) {
+        if (!this.db) await this.init();
+        if (!this.db) return localStorage.getItem(key);
+        return new Promise((resolve) => {
+            try {
+                const tx = this.db.transaction('settings', 'readonly');
+                const store = tx.objectStore('settings');
+                const req = store.get(key);
+                req.onsuccess = () => resolve(req.result ? req.result.value : localStorage.getItem(key));
+                req.onerror = () => resolve(localStorage.getItem(key));
+            } catch { resolve(localStorage.getItem(key)); }
+        });
+    },
+
+    async set(key, value) {
+        try { localStorage.setItem(key, value); } catch(e) {}
+        if (!this.db) await this.init();
+        if (!this.db) return;
+        return new Promise((resolve) => {
+            try {
+                const tx = this.db.transaction('settings', 'readwrite');
+                const store = tx.objectStore('settings');
+                store.put({ key, value });
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => resolve();
+            } catch { resolve(); }
+        });
+    }
+};
+
+const _nativeFetch = window.fetch.bind(window);
+async function mbmrFetch(url, options = {}) {
+    const tmdbKey = await MBMRStorage.get('tmdb_key');
+    const geminiKey = await MBMRStorage.get('gemini_key');
+    const username = await MBMRStorage.get('letterboxd_username');
+
+    options.headers = options.headers || {};
+    if (tmdbKey) options.headers['X-TMDB-Key'] = tmdbKey;
+    if (geminiKey) options.headers['X-Gemini-Key'] = geminiKey;
+    if (username) options.headers['X-Letterboxd-User'] = username;
+
+    return _nativeFetch(url, options);
+}
+
+window.fetch = function(url, options = {}) {
+    if (typeof url === 'string' && (url.startsWith('/api') || url.includes('/api/'))) {
+        return mbmrFetch(url, options);
+    }
+    return _nativeFetch(url, options);
+};
+
 // ── Init ──
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    await MBMRStorage.init();
+    checkOnboarding();
     loadStatus();
     loadWatchlistIds();
     const promptInput = document.getElementById('prompt-input');
@@ -31,28 +108,85 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 });
 
+// ── Onboarding Controller ──
+async function checkOnboarding() {
+    const onboarded = await MBMRStorage.get('mbmr_onboarded');
+    if (!onboarded) {
+        setTimeout(() => {
+            const modal = document.getElementById('onboarding-modal');
+            if (modal) modal.style.display = 'flex';
+        }, 600);
+    }
+}
+
+function nextOnboardStep(step) {
+    const s1 = document.getElementById('onboard-step-1');
+    const s2 = document.getElementById('onboard-step-2');
+    if (s1 && s2) {
+        s1.style.display = step === 1 ? 'flex' : 'none';
+        s2.style.display = step === 2 ? 'flex' : 'none';
+    }
+}
+
+async function completeOnboarding() {
+    const username = document.getElementById('onboard-username')?.value.trim() || 'sarthi_watcher';
+    const tmdb = document.getElementById('onboard-tmdb')?.value.trim();
+    const gemini = document.getElementById('onboard-gemini')?.value.trim();
+
+    await MBMRStorage.set('letterboxd_username', username);
+    if (tmdb) await MBMRStorage.set('tmdb_key', tmdb);
+    if (gemini) await MBMRStorage.set('gemini_key', gemini);
+    await MBMRStorage.set('mbmr_onboarded', 'true');
+
+    document.getElementById('onboarding-modal').style.display = 'none';
+    const syncInput = document.getElementById('sync-user-input');
+    if (syncInput) syncInput.value = username;
+    const profUser = document.getElementById('profile-user');
+    if (profUser) profUser.textContent = `@${username}`;
+
+    generateRecommendations();
+}
+
+function closeOnboardingModal() {
+    document.getElementById('onboarding-modal').style.display = 'none';
+    MBMRStorage.set('mbmr_onboarded', 'true');
+}
+
 async function loadStatus() {
+    const wakeTimer = setTimeout(() => {
+        const b = document.getElementById('render-wake-banner');
+        if (b) b.style.display = 'flex';
+    }, 2000);
+
     try {
-        const d = await (await fetch(`${API}/api/status`)).json();
+        const d = await (await mbmrFetch(`${API}/api/status`)).json();
+        clearTimeout(wakeTimer);
+        const b = document.getElementById('render-wake-banner');
+        if (b) b.style.display = 'none';
+
         if (d.total_films) {
             document.getElementById('nav-count').textContent = d.total_films;
             document.getElementById('journal-total-count').textContent = d.total_films;
         }
         if (d.avg_rating) document.getElementById('journal-avg-rating').textContent = d.avg_rating;
-        if (d.username) {
-            document.getElementById('profile-user').textContent = `@${d.username}`;
-            const userInput = document.getElementById('sync-user-input');
-            if (userInput) userInput.value = d.username;
-        }
+        
+        const localUser = await MBMRStorage.get('letterboxd_username');
+        const activeUser = localUser || d.username || 'sarthi_watcher';
+        document.getElementById('profile-user').textContent = `@${activeUser}`;
+        const userInput = document.getElementById('sync-user-input');
+        if (userInput) userInput.value = activeUser;
+
         if (d.watchlist_count !== undefined) {
             updateWatchlistBadge(d.watchlist_count);
         }
-    } catch(e) { console.warn('Status fetch failed', e); }
+    } catch(e) {
+        console.warn('Status fetch failed (server waking up)', e);
+    }
 }
 
 async function loadWatchlistIds() {
     try {
-        const d = await (await fetch(`${API}/api/watchlist`)).json();
+        const d = await (await mbmrFetch(`${API}/api/watchlist`)).json();
         watchlistIds = new Set((d.watchlist || []).map(m => m.id || m.movie_id));
         updateWatchlistBadge(watchlistIds.size);
     } catch(e) {}

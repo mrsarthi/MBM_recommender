@@ -36,7 +36,7 @@ class CineAIRequestHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-TMDB-Key, X-Gemini-Key, X-Letterboxd-User')
         self.end_headers()
 
     def _send_json(self, data, status=200):
@@ -369,9 +369,11 @@ class CineAIRequestHandler(SimpleHTTPRequestHandler):
                 return
         self._send_json({'success': False, 'message': 'Retraining failed. Check data.'}, 500)
 
-def start_server(port=8899):
-    server = ThreadedHTTPServer(('127.0.0.1', port), CineAIRequestHandler)
-    print(f"CineAI Backend Service running at http://127.0.0.1:{port}")
+MBMRRequestHandler = CineAIRequestHandler
+
+def start_server(host='0.0.0.0', port=8899):
+    server = ThreadedHTTPServer((host, port), MBMRRequestHandler)
+    print(f"MBMR Backend Service running at http://{host}:{port}")
     server.serve_forever()
 
 if __name__ == '__main__':

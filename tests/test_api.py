@@ -75,7 +75,7 @@ class TestCineAIAPI(unittest.TestCase):
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             content = resp.read().decode('utf-8')
-            self.assertIn('CineAI', content)
+            self.assertIn('MBMR', content)
             self.assertIn('Discover New Movies', content)
 
     def test_06_direct_movie_title_search(self):
