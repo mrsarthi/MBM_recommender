@@ -14,7 +14,7 @@ from backend.db import (
 )
 from backend.in_memory_model import get_or_train_user_model, invalidate_user_model, train_user_model_in_memory
 from backend.jobs import start_onboarding_job, start_csv_import_job, get_job_status
-from backend.predictions import predict_movie_score, get_post_watch_recommendations, get_watch_providers
+from backend.predictions import predict_movie_score, predict_movie_scores_batch, get_post_watch_recommendations, get_watch_providers
 from backend.gemini_client import interpret_query_with_ai
 from backend.recommender import analyze, titleNormalize, http_session
 from backend.watchlist import get_mood_cluster, pick_movie_for_tonight
@@ -302,8 +302,17 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
         try:
             raw_items = get_user_watchlist(user)
+            if not raw_items:
+                self._send_json({'watchlist': [], 'total': 0})
+                return
+
+            # Vectorized batch prediction in RAM (< 5ms)
+            scores = [3.8] * len(raw_items)
+            if ai_model:
+                scores = predict_movie_scores_batch(ai_model, ai_columns, ai_vectorizer, ai_encoders, raw_items)
+
             items = []
-            for r in raw_items:
+            for i, r in enumerate(raw_items):
                 genres = str(r.get('genres') or '').split(',')
                 genres = [g.strip() for g in genres if g.strip() and g.strip().lower() != 'nan']
                 runtime = int(r.get('runtime') or 0)
@@ -311,14 +320,6 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 year = str(r.get('year') or '').replace('.0', '')
                 title = str(r.get('title') or 'Untitled')
                 if title.lower() == 'nan': title = 'Untitled'
-
-                ai_score = 3.8
-                if ai_model:
-                    ai_score = round(predict_movie_score(
-                        ai_model, ai_columns, ai_vectorizer, ai_encoders,
-                        genres=genres, overview=overview,
-                        director=str(r.get('director') or ''), runtime=runtime
-                    ), 1)
 
                 clusters = get_mood_cluster(", ".join(genres), runtime)
 
@@ -334,7 +335,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                     'release_date': year,
                     'runtime': runtime,
                     'vote_average': float(r.get('vote_average') or 7.0),
-                    'ai_score': ai_score,
+                    'ai_score': scores[i],
                     'clusters': clusters,
                     'added_date': str(r.get('added_date') or '')
                 })

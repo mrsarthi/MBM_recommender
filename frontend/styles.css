@@ -571,6 +571,62 @@ body {
 .cmp-row { display: flex; justify-content: space-between; }
 .gold { color: var(--gold); }
 .diff-pill { margin-top: 4px; padding: 3px 8px; background: var(--accent-bg); color: var(--accent); font-weight: 700; border-radius: 4px; text-align: center; font-size: 11px; }
+.modal-submit {
+    width: 100%;
+    background: linear-gradient(135deg, #22C55E 0%, #16A34A 100%);
+    color: #052E16;
+    border: none;
+    border-radius: var(--radius);
+    padding: 13px 18px;
+    font-weight: 800;
+    font-size: 14px;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 4px 14px rgba(34, 197, 94, 0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-family: var(--font);
+}
+.modal-submit:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.08);
+    box-shadow: 0 6px 20px rgba(34, 197, 94, 0.35);
+}
+.modal-submit:active {
+    transform: scale(0.98);
+}
+
+/* Toast Notifications */
+.app-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: rgba(23, 23, 23, 0.95);
+    color: #fff;
+    border: 1px solid var(--accent);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 20px rgba(74, 222, 128, 0.2);
+    backdrop-filter: blur(12px);
+    border-radius: var(--pill);
+    padding: 10px 22px;
+    font-size: 13px;
+    font-weight: 600;
+    z-index: 1000;
+    opacity: 0;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.app-toast.show {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+}
+
 .sync-user-box {
     display: flex;
     flex-direction: column;
@@ -1163,10 +1219,25 @@ body {
     .sp-backdrop-wrap {
         height: 200px;
     }
+    .modal-bg {
+        z-index: 600;
+        align-items: flex-end;
+        padding-bottom: env(safe-area-inset-bottom);
+    }
     .modal-card {
-        width: 94vw;
-        max-height: 90vh;
+        width: 100vw;
+        max-width: 100vw;
+        max-height: 88vh;
+        border-radius: 20px 20px 0 0;
         overflow-y: auto;
+        border-bottom: none;
+    }
+    .log-dropdown {
+        max-height: 220px;
+    }
+    .log-dd-item {
+        padding: 12px 14px;
+        font-size: 13px;
     }
 }
 

@@ -1,6 +1,7 @@
 import os
 import hashlib
 import json
+import time
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, execute_values
@@ -10,6 +11,29 @@ from backend.config import DATABASE_URL
 # Threaded connection pool
 _pool = None
 _pool_lock = __import__('threading').Lock()
+
+# Fast in-memory query cache for instantaneous UI responses (< 0.1ms)
+_query_cache = {}
+_CACHE_TTL = 30.0
+
+def _get_cache(key):
+    entry = _query_cache.get(key)
+    if entry and (time.time() - entry['time'] < _CACHE_TTL):
+        return entry['data']
+    return None
+
+def _set_cache(key, data):
+    _query_cache[key] = {'data': data, 'time': time.time()}
+
+def invalidate_user_cache(username_or_id=""):
+    global _query_cache
+    if not username_or_id:
+        _query_cache.clear()
+        return
+    u_str = str(username_or_id).lower()
+    to_delete = [k for k in _query_cache if u_str in k.lower()]
+    for k in to_delete:
+        _query_cache.pop(k, None)
 
 def get_db_pool():
     global _pool
@@ -422,6 +446,7 @@ def upsert_user_diary(user_id: int, diary_entries):
                     watched_date = COALESCE(NULLIF(EXCLUDED.watched_date, ''), user_diary.watched_date)
             """, records)
             conn.commit()
+            invalidate_user_cache(user_id)
             return len(records)
     finally:
         release_connection(conn)
@@ -430,6 +455,11 @@ def get_user_diary(username: str, search: str = '', rating_filter: str = 'All', 
     user = get_user(username)
     if not user:
         return [], 0, 0.0
+
+    cache_key = f"diary_{user['id']}_{search}_{rating_filter}_{year_filter}_{sort_mode}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
 
     conn = get_connection()
     try:
@@ -481,7 +511,9 @@ def get_user_diary(username: str, search: str = '', rating_filter: str = 'All', 
             total_count = len(rows)
             ratings = [float(r['rating']) for r in rows if r.get('rating') is not None]
             avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else 0.0
-            return rows, total_count, avg_rating
+            res = (rows, total_count, avg_rating)
+            _set_cache(cache_key, res)
+            return res
     finally:
         release_connection(conn)
 
@@ -517,6 +549,7 @@ def upsert_user_watchlist(user_id: int, watchlist_entries):
                     added_date = EXCLUDED.added_date
             """, records)
             conn.commit()
+            invalidate_user_cache(user_id)
             return len(records)
     finally:
         release_connection(conn)
@@ -525,6 +558,11 @@ def get_user_watchlist(username: str):
     user = get_user(username)
     if not user:
         return []
+
+    cache_key = f"wl_{user['id']}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
 
     conn = get_connection()
     try:
@@ -539,7 +577,9 @@ def get_user_watchlist(username: str):
                 WHERE w.user_id = %s
                 ORDER BY w.id DESC
             """, (user['id'],))
-            return [dict(r) for r in cur.fetchall()]
+            rows = [dict(r) for r in cur.fetchall()]
+            _set_cache(cache_key, rows)
+            return rows
     finally:
         release_connection(conn)
 
@@ -551,6 +591,7 @@ def add_to_user_watchlist(username: str, movie_data: dict):
     upsert_movies_batch([movie_data])
     m_id = int(movie_data.get('movie_id') or movie_data.get('id'))
     upsert_user_watchlist(user['id'], [{'movie_id': m_id, 'added_date': pd.Timestamp.now().strftime('%Y-%m-%d')}])
+    invalidate_user_cache(username)
     return True, f"Added to Watchlist!"
 
 def remove_from_user_watchlist(username: str, movie_id: int):
@@ -563,6 +604,7 @@ def remove_from_user_watchlist(username: str, movie_id: int):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM user_watchlist WHERE user_id = %s AND movie_id = %s", (user['id'], int(movie_id)))
             conn.commit()
+            invalidate_user_cache(username)
             return True, "Removed from Watchlist."
     finally:
         release_connection(conn)

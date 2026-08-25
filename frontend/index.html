@@ -24,10 +24,10 @@
         <div class="rail-logo" title="MBMR — Mood-Based Movie Recommender">
             <img src="assets/logo.svg" alt="MBMR Logo" class="rail-logo-img">
         </div>
-        <button class="rail-icon active" data-view="discover" onclick="switchView('discover')" title="Discover (Search)">
+        <button class="rail-icon" data-view="discover" onclick="switchView('discover')" title="Discover (Search)">
             <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>
         </button>
-        <button class="rail-icon" data-view="watchlist" onclick="switchView('watchlist')" title="Watchlist">
+        <button class="rail-icon active" data-view="watchlist" onclick="switchView('watchlist')" title="Watchlist">
             <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
             <span id="rail-watchlist-badge" class="rail-badge" style="display:none;">0</span>
         </button>
@@ -50,7 +50,7 @@
     <main class="main-content">
 
         <!-- ===== 1. DISCOVER VIEW ===== -->
-        <section id="view-discover" class="view active">
+        <section id="view-discover" class="view">
 
             <!-- Big Search Bar -->
             <div class="search-zone">
@@ -97,7 +97,7 @@
         </section>
 
         <!-- ===== 2. WATCHLIST VIEW ===== -->
-        <section id="view-watchlist" class="view">
+        <section id="view-watchlist" class="view active">
             <div class="watchlist-hero">
                 <div class="wl-hero-left">
                     <button class="pick-tonight-btn" onclick="openPickTonightModal()">
@@ -218,7 +218,7 @@
             <span class="dock-brand">✦ MBMR</span>
         </div>
         <div class="dock-center">
-            <span id="dock-label">Discover New Movies</span>
+            <span id="dock-label">Your Curated Watchlist</span>
         </div>
         <div class="dock-right">
             <span class="dock-profile">

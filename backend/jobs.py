@@ -244,6 +244,49 @@ def scrape_letterboxd_diary(username, session=None, max_pages=60, on_page=None):
         if len(rows) < 50:
             break
 
+    # Fallback to Letterboxd RSS feed if HTML scrape was blocked or returned no entries
+    if not entries:
+        try:
+            import xml.etree.ElementTree as ET
+            rss_url = "{0}/{1}/rss/".format(LB_BASE, username)
+            r_resp = s.get(rss_url, timeout=12)
+            if r_resp.status_code == 200:
+                root = ET.fromstring(r_resp.content)
+                ns = {'letterboxd': 'https://letterboxd.com', 'tmdb': 'https://www.themoviedb.org'}
+                for item in root.findall('./channel/item'):
+                    title_elem = item.find('letterboxd:filmTitle', ns)
+                    year_elem = item.find('letterboxd:filmYear', ns)
+                    rating_elem = item.find('letterboxd:memberRating', ns)
+                    date_elem = item.find('letterboxd:watchedDate', ns)
+                    link_elem = item.find('link')
+
+                    title = title_elem.text.strip() if title_elem is not None and title_elem.text else ''
+                    if not title:
+                        raw_t = item.find('title')
+                        if raw_t is not None and raw_t.text:
+                            m = re.match(r'^(.*?),\s*(\d{4})?\s*-\s*([★½]+)?', raw_t.text)
+                            if m: title = m.group(1).strip()
+                    if not title:
+                        continue
+
+                    year = year_elem.text.strip() if year_elem is not None and year_elem.text else ''
+                    rating = None
+                    if rating_elem is not None and rating_elem.text:
+                        try: rating = float(rating_elem.text.strip())
+                        except: rating = None
+                    date = date_elem.text.strip() if date_elem is not None and date_elem.text else ''
+                    link = link_elem.text.strip() if link_elem is not None and link_elem.text else ''
+                    slug = link.rstrip('/').split('/')[-1] if link else title_normalize(title)
+
+                    if slug not in seen_slugs:
+                        seen_slugs.add(slug)
+                        entries.append({
+                            'slug': slug, 'title': title, 'year_hint': year,
+                            'rating': rating, 'watched_date': date
+                        })
+        except Exception:
+            pass
+
     return entries
 
 

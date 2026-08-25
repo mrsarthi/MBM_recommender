@@ -8,6 +8,11 @@ env/
 ENV/
 dataset/
 
+
+# User Data
+user_data/*.csv
+user_data/*.pkl
+
 # Python Bytecode and Cache
 __pycache__/
 *.py[cod]

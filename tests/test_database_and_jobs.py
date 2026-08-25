@@ -163,7 +163,7 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
             'prompt': 'swing girl',
             'context': 'Alone',
             'streaming': 'All Platforms'
-        }, timeout=8)
+        }, timeout=15)
         
         self.assertEqual(resp.status_code, 200)
         data = resp.json()

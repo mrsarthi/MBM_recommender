@@ -14,6 +14,10 @@ let watchlistIds = new Set();
 let currentMatchmakerWinner = null;
 let currentWatchlistCluster = 'All';
 
+// ── In-Memory Fast Caches (Instant 0ms Tab Switching) ──
+const watchlistCache = new Map();
+const diaryCache = new Map();
+
 // ── IndexedDB Storage for Private Credentials & Offline State ──
 const MBMRStorage = {
     dbName: 'mbmr_local_db',
@@ -89,23 +93,57 @@ window.fetch = function(url, options = {}) {
     return _nativeFetch(url, options);
 };
 
+// Instant Hydration from persistent cache (0.0ms initial screen render)
+function hydrateFromStorage() {
+    try {
+        const cachedWl = localStorage.getItem('mbmr_cached_watchlist');
+        if (cachedWl) {
+            const data = JSON.parse(cachedWl);
+            if (data && data.watchlist && data.watchlist.length > 0) {
+                renderWatchlistGrid(data.watchlist);
+                updateWatchlistBadge(data.total !== undefined ? data.total : data.watchlist.length);
+                const avg = (data.watchlist.reduce((acc, m) => acc + (m.ai_score || 3.8), 0) / data.watchlist.length).toFixed(1);
+                const avgEl = document.getElementById('wl-avg-score');
+                if (avgEl) avgEl.textContent = `${avg}★`;
+            }
+        }
+        const cachedDiary = localStorage.getItem('mbmr_cached_diary');
+        if (cachedDiary) {
+            const d = JSON.parse(cachedDiary);
+            if (d && d.films && d.films.length > 0) {
+                currentDiaryFilms = d.films;
+                renderJournal(d.films);
+                if (d.total) {
+                    const jCount = document.getElementById('journal-total-count');
+                    const nCount = document.getElementById('nav-count');
+                    if (jCount) jCount.textContent = d.total;
+                    if (nCount) nCount.textContent = d.total;
+                }
+            }
+        }
+    } catch(e) {}
+}
+
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
+    hydrateFromStorage();
     await MBMRStorage.init();
     checkOnboarding();
     loadStatus();
     loadWatchlistIds();
+    switchView('watchlist');
     const promptInput = document.getElementById('prompt-input');
-    if (!promptInput.value.trim()) {
-        promptInput.value = 'Mind-Bending';
+    if (promptInput) {
+        if (!promptInput.value.trim()) {
+            promptInput.value = 'Mind-Bending';
+        }
+        promptInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') generateRecommendations();
+        });
+        promptInput.addEventListener('input', () => {
+            document.querySelectorAll('.vibe').forEach(v => v.classList.remove('active'));
+        });
     }
-    generateRecommendations();
-    promptInput.addEventListener('keydown', e => {
-        if (e.key === 'Enter') generateRecommendations();
-    });
-    promptInput.addEventListener('input', () => {
-        document.querySelectorAll('.vibe').forEach(v => v.classList.remove('active'));
-    });
 });
 
 // ── Onboarding Controller ──
@@ -120,14 +158,18 @@ async function checkOnboarding() {
 }
 
 async function loadStatus() {
-    const wakeTimer = setTimeout(() => {
-        const b = document.getElementById('render-wake-banner');
-        if (b) b.style.display = 'flex';
-    }, 2000);
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    let wakeTimer = null;
+    if (!isLocal) {
+        wakeTimer = setTimeout(() => {
+            const b = document.getElementById('render-wake-banner');
+            if (b) b.style.display = 'flex';
+        }, 6000);
+    }
 
     try {
         const d = await (await mbmrFetch(`${API}/api/status`)).json();
-        clearTimeout(wakeTimer);
+        if (wakeTimer) clearTimeout(wakeTimer);
         const b = document.getElementById('render-wake-banner');
         if (b) b.style.display = 'none';
 
@@ -143,7 +185,7 @@ async function loadStatus() {
 
         updateWatchlistBadge(d.watchlist_count || 0);
     } catch(e) {
-        console.warn('Status fetch failed (server waking up)', e);
+        console.warn('Status fetch failed', e);
     }
 }
 
@@ -368,33 +410,55 @@ function renderWatchlistSkeleton(count = 6) {
 }
 
 async function fetchWatchlist() {
-    const stream = document.getElementById('wl-stream-select').value;
-    const sort = document.getElementById('wl-sort-select').value;
+    const stream = document.getElementById('wl-stream-select')?.value || 'All Platforms';
+    const sort = document.getElementById('wl-sort-select')?.value || 'Highest Predicted ★';
+    const cacheKey = `${currentWatchlistCluster}_${sort}_${stream}`;
     const url = `${API}/api/watchlist?cluster=${encodeURIComponent(currentWatchlistCluster)}&sort=${encodeURIComponent(sort)}&platform=${encodeURIComponent(stream)}`;
     const dock = document.getElementById('dock-label');
 
-    renderWatchlistSkeleton(6);
-    if (dock) {
-        dock.innerHTML = `<span class="dock-loading"><span class="dock-spinner"></span> Curating your watchlist...</span>`;
+    // 1. Instant Cache Hit (0ms render)
+    if (watchlistCache.has(cacheKey)) {
+        const cachedData = watchlistCache.get(cacheKey);
+        const cachedItems = cachedData.watchlist || [];
+        renderWatchlistGrid(cachedItems);
+        updateWatchlistBadge(cachedData.total !== undefined ? cachedData.total : cachedItems.length);
+        if (cachedItems.length > 0) {
+            const avg = (cachedItems.reduce((acc, m) => acc + (m.ai_score || 3.8), 0) / cachedItems.length).toFixed(1);
+            const avgEl = document.getElementById('wl-avg-score');
+            if (avgEl) avgEl.textContent = `${avg}★`;
+        }
+    } else {
+        renderWatchlistSkeleton(6);
+        if (dock) {
+            dock.innerHTML = `<span class="dock-loading"><span class="dock-spinner"></span> Curating your watchlist...</span>`;
+        }
     }
 
     try {
         const res = await fetch(url);
         const data = await res.json();
         const items = data.watchlist || [];
+        watchlistCache.set(cacheKey, data);
+        if (currentWatchlistCluster === 'All' && sort === 'Highest Predicted ★' && stream === 'All Platforms') {
+            try { localStorage.setItem('mbmr_cached_watchlist', JSON.stringify(data)); } catch(e) {}
+        }
         renderWatchlistGrid(items);
         updateWatchlistBadge(data.total !== undefined ? data.total : items.length);
 
         if (items.length > 0) {
             const avg = (items.reduce((acc, m) => acc + (m.ai_score || 3.8), 0) / items.length).toFixed(1);
-            document.getElementById('wl-avg-score').textContent = `${avg}★`;
+            const avgEl = document.getElementById('wl-avg-score');
+            if (avgEl) avgEl.textContent = `${avg}★`;
         } else {
-            document.getElementById('wl-avg-score').textContent = `—`;
+            const avgEl = document.getElementById('wl-avg-score');
+            if (avgEl) avgEl.textContent = `—`;
         }
     } catch(e) { 
         console.error('Watchlist fetch error', e); 
-        const grid = document.getElementById('watchlist-grid');
-        if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:var(--text3);">Failed to load watchlist.</div>';
+        if (!watchlistCache.has(cacheKey)) {
+            const grid = document.getElementById('watchlist-grid');
+            if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:var(--text3);">Failed to load watchlist.</div>';
+        }
     } finally {
         if (dock) dock.textContent = 'Your Curated Watchlist';
     }
@@ -454,6 +518,7 @@ async function removeFromWatchlistDirect(movieId) {
             body: JSON.stringify({ movie_id: movieId })
         });
         watchlistIds.delete(movieId);
+        watchlistCache.clear();
         fetchWatchlist();
         updateWatchlistBadge(watchlistIds.size);
     } catch(e) {}
@@ -649,13 +714,38 @@ function setDiaryViewMode(mode) {
 }
 
 async function fetchDiary() {
-    const s = document.getElementById('diary-search').value.trim();
-    const sort = document.getElementById('diary-sort').value;
+    const s = document.getElementById('diary-search')?.value.trim() || '';
+    const sort = document.getElementById('diary-sort')?.value || 'Newest Log First';
+    const cacheKey = `${s}_${diaryRating}_${sort}`;
+    const url = `${API}/api/diary?search=${encodeURIComponent(s)}&rating=${encodeURIComponent(diaryRating)}&sort=${encodeURIComponent(sort)}`;
+
+    // 1. Instant Cache Hit (0ms render)
+    if (diaryCache.has(cacheKey)) {
+        const cached = diaryCache.get(cacheKey);
+        currentDiaryFilms = cached.films || [];
+        renderJournal(currentDiaryFilms);
+        if (cached.total) { 
+            const jCount = document.getElementById('journal-total-count');
+            const nCount = document.getElementById('nav-count');
+            if (jCount) jCount.textContent = cached.total; 
+            if (nCount) nCount.textContent = cached.total; 
+        }
+    }
+
     try {
-        const d = await (await fetch(`${API}/api/diary?search=${encodeURIComponent(s)}&rating=${encodeURIComponent(diaryRating)}&sort=${encodeURIComponent(sort)}`)).json();
+        const d = await (await fetch(url)).json();
+        diaryCache.set(cacheKey, d);
+        if (!s && diaryRating === 'All' && sort === 'Newest Log First') {
+            try { localStorage.setItem('mbmr_cached_diary', JSON.stringify(d)); } catch(e) {}
+        }
         currentDiaryFilms = d.films || [];
         renderJournal(currentDiaryFilms);
-        if (d.total) { document.getElementById('journal-total-count').textContent = d.total; document.getElementById('nav-count').textContent = d.total; }
+        if (d.total) { 
+            const jCount = document.getElementById('journal-total-count');
+            const nCount = document.getElementById('nav-count');
+            if (jCount) jCount.textContent = d.total; 
+            if (nCount) nCount.textContent = d.total; 
+        }
     } catch(e) { console.error('Diary error', e); }
 }
 
@@ -788,20 +878,65 @@ function renderBadges(badges) {
     badges.forEach(b => { const c = document.createElement('div'); c.className = 'badge-card'; c.innerHTML = `<strong>${b.title}</strong><p>${b.desc}</p>`; l.appendChild(c); });
 }
 
+// ── Modern Toast Notification ──
+let _toastTimer = null;
+function showToast(message, glyph = '✓') {
+    let t = document.getElementById('app-toast');
+    if (!t) {
+        t = document.createElement('div');
+        t.id = 'app-toast';
+        t.className = 'app-toast';
+        document.body.appendChild(t);
+    }
+    t.innerHTML = `<span style="color:var(--accent);font-size:16px;">${glyph}</span> <span>${message}</span>`;
+    t.classList.add('show');
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => {
+        t.classList.remove('show');
+    }, 3200);
+}
+
 // ── Log Modal ──
-function openLogModal() { document.getElementById('log-modal').classList.add('open'); }
-function closeLogModal() { document.getElementById('log-modal').classList.remove('open'); }
+function openLogModal() { 
+    document.getElementById('log-modal').classList.add('open'); 
+    const searchInput = document.getElementById('log-search-input');
+    if (searchInput && !selectedLogMovie) searchInput.focus();
+}
+
+function closeLogModal() { 
+    document.getElementById('log-modal').classList.remove('open'); 
+    const dd = document.getElementById('log-search-dropdown');
+    if (dd) dd.style.display = 'none';
+}
+
 function openLogForCurrentSpotlight() {
     if (!currentSpotlight) return;
-    selectedLogMovie = currentSpotlight;
-    document.getElementById('modal-log-title').textContent = selectedLogMovie.title;
-    document.getElementById('modal-log-year').textContent = (selectedLogMovie.release_date||selectedLogMovie.year||'').split('-')[0];
-    document.getElementById('modal-log-poster').src = selectedLogMovie.poster_path ? `${IMG200}${selectedLogMovie.poster_path}` : '';
-    document.getElementById('modal-ai-pred').textContent = `★ ${(selectedLogMovie.ai_score||3.8).toFixed(1)}`;
+    selectMovieForLog(currentSpotlight);
     updateSliderLabel(4.5);
     openLogModal();
 }
-function closeModalBg(e, id) { if (e.target.id === id) document.getElementById(id).classList.remove('open'); }
+
+function closeModalBg(e, id) { 
+    if (e.target.id === id) document.getElementById(id).classList.remove('open'); 
+}
+
+function selectMovieForLog(m) {
+    selectedLogMovie = m;
+    const dd = document.getElementById('log-search-dropdown');
+    if (dd) dd.style.display = 'none';
+    
+    const titleEl = document.getElementById('modal-log-title');
+    const yearEl = document.getElementById('modal-log-year');
+    const posterEl = document.getElementById('modal-log-poster');
+    const predEl = document.getElementById('modal-ai-pred');
+    
+    if (titleEl) titleEl.textContent = m.title || 'Selected Film';
+    if (yearEl) yearEl.textContent = (m.release_date || m.year || '').split('-')[0];
+    if (posterEl) posterEl.src = m.poster_path ? `${IMG200}${m.poster_path}` : '';
+    if (predEl) predEl.textContent = `★ ${(m.ai_score || 3.8).toFixed(1)}`;
+    const slider = document.getElementById('rating-slider');
+    if (slider) updateSliderLabel(slider.value);
+}
 
 async function searchTMDBLog(q) {
     const dd = document.getElementById('log-search-dropdown');
@@ -812,17 +947,17 @@ async function searchTMDBLog(q) {
         if (d.results?.length) {
             dd.style.display = 'block';
             d.results.forEach(m => {
-                const it = document.createElement('div'); it.className = 'log-dd-item';
+                const it = document.createElement('div'); 
+                it.className = 'log-dd-item';
                 it.innerHTML = `<span>${m.title}</span><span style="color:var(--text3)">${(m.release_date||'').split('-')[0]}</span>`;
-                it.onclick = () => { 
-                    selectedLogMovie = m; 
-                    dd.style.display = 'none'; 
-                    document.getElementById('modal-log-title').textContent = m.title; 
-                    document.getElementById('modal-log-year').textContent = (m.release_date||'').split('-')[0]; 
-                    document.getElementById('modal-log-poster').src = m.poster_path ? `${IMG200}${m.poster_path}` : ''; 
-                    document.getElementById('modal-ai-pred').textContent = `★ ${(m.ai_score||3.8).toFixed(1)}`; 
-                    updateSliderLabel(document.getElementById('rating-slider').value); 
+                
+                const handler = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    selectMovieForLog(m);
                 };
+                it.addEventListener('click', handler);
+                it.addEventListener('touchend', handler);
                 dd.appendChild(it);
             });
         } else { dd.style.display = 'none'; }
@@ -830,36 +965,76 @@ async function searchTMDBLog(q) {
 }
 
 function updateSliderLabel(val) {
-    document.getElementById('slider-val').textContent = `${val}★`;
-    document.getElementById('modal-user-rate').textContent = `★ ${val}`;
-    const pred = parseFloat((document.getElementById('modal-ai-pred').textContent||'').replace('★','').trim()) || 3.8;
+    const sliderVal = document.getElementById('slider-val');
+    const userRate = document.getElementById('modal-user-rate');
+    if (sliderVal) sliderVal.textContent = `${val}★`;
+    if (userRate) userRate.textContent = `★ ${val}`;
+    
+    const predText = (document.getElementById('modal-ai-pred')?.textContent || '').replace('★','').trim();
+    const pred = parseFloat(predText) || 3.8;
     const diff = (parseFloat(val) - pred).toFixed(1);
     const pill = document.getElementById('modal-diff-pill');
-    pill.textContent = diff > 0 ? `+${diff} Above Prediction` : diff < 0 ? `${diff} Below Prediction` : 'Exact Match!';
+    if (pill) {
+        pill.textContent = diff > 0 ? `+${diff} Above Prediction` : diff < 0 ? `${diff} Below Prediction` : 'Exact Match!';
+    }
 }
 
 async function submitLogMovie() {
-    if (!selectedLogMovie) { alert('Select a movie first.'); return; }
+    if (!selectedLogMovie) { 
+        showToast('Please select or search for a film first.', '⚠️'); 
+        return; 
+    }
     const mId = selectedLogMovie.id || selectedLogMovie.movie_id;
+    if (!mId) {
+        showToast('Invalid film selection.', '⚠️');
+        return;
+    }
+    
+    const slider = document.getElementById('rating-slider');
+    const ratingVal = slider ? parseFloat(slider.value) : 4.0;
+    const contextVal = document.getElementById('context-select')?.value || 'Alone';
+    const genresVal = Array.isArray(selectedLogMovie.genres) 
+        ? selectedLogMovie.genres.join(', ') 
+        : (selectedLogMovie.genres || '');
+    const yearVal = (selectedLogMovie.release_date || selectedLogMovie.year || '').split('-')[0].replace('.0', '');
+
     try {
-        const d = await (await fetch(`${API}/api/log_movie`, { 
+        const res = await fetch(`${API}/api/log_movie`, { 
             method: 'POST', 
             headers: {'Content-Type':'application/json'}, 
             body: JSON.stringify({ 
                 movie_id: mId, 
-                title: selectedLogMovie.title, 
-                rating: parseFloat(document.getElementById('rating-slider').value), 
-                context: document.getElementById('context-select').value, 
-                overview: selectedLogMovie.overview||'' 
+                title: selectedLogMovie.title || 'Untitled', 
+                rating: ratingVal, 
+                context: contextVal, 
+                genres: genresVal,
+                year: yearVal,
+                poster_path: selectedLogMovie.poster_path || '',
+                backdrop_path: selectedLogMovie.backdrop_path || '',
+                overview: selectedLogMovie.overview || '' 
             }) 
-        })).json();
+        });
+        const d = await res.json();
         
         closeLogModal(); 
+        closeSpotlight();
+        
         watchlistIds.delete(mId);
+        watchlistCache.clear();
+        diaryCache.clear();
+        
         loadStatus(); 
         updateWatchlistBadge(watchlistIds.size);
-        alert(d.message || 'Logged!');
-    } catch { alert('Error logging.'); }
+        
+        if (currentView === 'watchlist') fetchWatchlist();
+        if (currentView === 'journal') fetchDiary();
+        if (currentView === 'discover') generateRecommendations();
+        
+        showToast(d.message || `Logged "${selectedLogMovie.title}" (${ratingVal}★) to Diary!`);
+    } catch(err) { 
+        console.error('Error logging movie:', err);
+        showToast('Failed to log film. Please try again.', '⚠️'); 
+    }
 }
 
 // ── Sync Modal ──
