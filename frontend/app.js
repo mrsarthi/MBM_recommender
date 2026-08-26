@@ -218,10 +218,11 @@ function switchView(name) {
     const v = document.getElementById(`view-${name}`);
     if (v) v.classList.add('active');
     
+    const journalCount = document.getElementById('journal-total-count')?.textContent || document.getElementById('nav-count')?.textContent || '0';
     const labels = { 
         discover: 'Discover New Movies', 
         watchlist: 'Your Curated Watchlist',
-        journal: 'Your Film Journal (740 Lifetime Films)', 
+        journal: `Your Film Journal (${journalCount} Lifetime Films)`, 
         taste: 'Taste Radar & Achievements' 
     };
     document.getElementById('dock-label').textContent = labels[name] || '';
@@ -390,14 +391,14 @@ function renderGrid(movies) {
         const isSaved = watchlistIds.has(m.id);
 
         let badgeClass = 'poster-badge';
-        let badgeText = `Match: ${pct}%`;
+        let badgeText = `✦ ${pct}%`;
         if (m.is_direct_match) {
             if (m.is_watched) {
                 badgeClass = 'poster-badge in-diary';
-                badgeText = `👁️ In Diary · ${pct}%`;
+                badgeText = `👁️ ${pct}%`;
             } else {
                 badgeClass = 'poster-badge direct-match';
-                badgeText = `🎯 Match · ${pct}%`;
+                badgeText = `🎯 ${pct}%`;
             }
         }
 
@@ -599,7 +600,7 @@ function renderWatchlistGrid(items) {
             <div class="wl-card-actions" onclick="event.stopPropagation()">
                 <button class="wl-act-btn" title="Remove from Watchlist" onclick="removeFromWatchlistDirect(${m.movie_id})">✕</button>
             </div>
-            <span class="poster-badge">Predicted: ${score}★</span>
+            <span class="poster-badge">★ ${score}</span>
             ${runtime ? `<span class="wl-runtime-tag">${runtime}</span>` : ''}
             <div class="poster-info">
                 <div class="poster-name">${m.title}</div>
@@ -797,6 +798,8 @@ async function fetchRippleRecs() {
 let diaryRating = 'All';
 let diaryViewMode = 'list';
 let currentDiaryFilms = [];
+let diaryCurrentPage = 1;
+const DIARY_PAGE_SIZE = 50;
 
 function setDiaryViewMode(mode) {
     diaryViewMode = mode;
@@ -812,7 +815,8 @@ function setDiaryViewMode(mode) {
     renderJournal(currentDiaryFilms);
 }
 
-async function fetchDiary() {
+async function fetchDiary(resetPage = true) {
+    if (resetPage) diaryCurrentPage = 1;
     const s = document.getElementById('diary-search')?.value.trim() || '';
     const sort = document.getElementById('diary-sort')?.value || 'Newest Log First';
     const cacheKey = `${s}_${diaryRating}_${sort}`;
@@ -850,7 +854,7 @@ async function fetchDiary() {
 
 function setDiaryRating(el, r) {
     document.querySelectorAll('.j-chip').forEach(c => c.classList.remove('active'));
-    el.classList.add('active'); diaryRating = r; fetchDiary();
+    el.classList.add('active'); diaryRating = r; fetchDiary(true);
 }
 
 // The diary API returns canonical `title`/`year`. Older CSV-backed responses used the
@@ -878,18 +882,27 @@ function openSpotlightFromDiary(f) {
 function renderJournal(films) {
     const listEl = document.getElementById('journal-list');
     const gridEl = document.getElementById('journal-grid');
+    const pagEl = document.getElementById('journal-pagination');
     
     if (!films.length) {
         const emptyHtml = '<div style="grid-column:1/-1;text-align:center;padding:50px 0;color:var(--text3);">No diary entries found.</div>';
         if (listEl) listEl.innerHTML = emptyHtml;
         if (gridEl) gridEl.innerHTML = emptyHtml;
+        if (pagEl) pagEl.innerHTML = '';
         return;
     }
+
+    const totalPages = Math.ceil(films.length / DIARY_PAGE_SIZE);
+    if (diaryCurrentPage > totalPages) diaryCurrentPage = totalPages;
+    if (diaryCurrentPage < 1) diaryCurrentPage = 1;
+
+    const startIdx = (diaryCurrentPage - 1) * DIARY_PAGE_SIZE;
+    const pageFilms = films.slice(startIdx, startIdx + DIARY_PAGE_SIZE);
 
     if (diaryViewMode === 'list') {
         if (listEl) {
             listEl.innerHTML = '';
-            films.forEach(f => {
+            pageFilms.forEach(f => {
                 const row = document.createElement('div');
                 row.className = 'j-row';
                 row.onclick = () => openSpotlightFromDiary(f);
@@ -918,7 +931,7 @@ function renderJournal(films) {
     } else {
         if (gridEl) {
             gridEl.innerHTML = '';
-            films.forEach(f => {
+            pageFilms.forEach(f => {
                 const card = document.createElement('div');
                 card.className = 'poster-card';
                 card.onclick = () => openSpotlightFromDiary(f);
@@ -940,6 +953,59 @@ function renderJournal(films) {
             });
         }
     }
+
+    renderJournalPagination(films.length);
+}
+
+function renderJournalPagination(totalFilms) {
+    const pagEl = document.getElementById('journal-pagination');
+    if (!pagEl) return;
+    const totalPages = Math.ceil(totalFilms / DIARY_PAGE_SIZE);
+    if (totalPages <= 1) {
+        pagEl.innerHTML = '';
+        return;
+    }
+
+    let html = `
+        <button class="j-page-btn" onclick="changeDiaryPage(${diaryCurrentPage - 1})" ${diaryCurrentPage <= 1 ? 'disabled' : ''}>
+            ‹ Prev
+        </button>
+    `;
+
+    let startPage = Math.max(1, diaryCurrentPage - 2);
+    let endPage = Math.min(totalPages, diaryCurrentPage + 2);
+    if (diaryCurrentPage <= 3) endPage = Math.min(5, totalPages);
+    if (diaryCurrentPage > totalPages - 3) startPage = Math.max(1, totalPages - 4);
+
+    if (startPage > 1) {
+        html += `<button class="j-page-btn" onclick="changeDiaryPage(1)">1</button>`;
+        if (startPage > 2) html += `<span class="j-page-info">...</span>`;
+    }
+
+    for (let p = startPage; p <= endPage; p++) {
+        html += `<button class="j-page-btn ${p === diaryCurrentPage ? 'active' : ''}" onclick="changeDiaryPage(${p})">${p}</button>`;
+    }
+
+    if (endPage < totalPages) {
+        if (endPage < totalPages - 1) html += `<span class="j-page-info">...</span>`;
+        html += `<button class="j-page-btn" onclick="changeDiaryPage(${totalPages})">${totalPages}</button>`;
+    }
+
+    html += `
+        <button class="j-page-btn" onclick="changeDiaryPage(${diaryCurrentPage + 1})" ${diaryCurrentPage >= totalPages ? 'disabled' : ''}>
+            Next ›
+        </button>
+        <span class="j-page-info">Page ${diaryCurrentPage} of ${totalPages} (${totalFilms} films)</span>
+    `;
+
+    pagEl.innerHTML = html;
+}
+
+function changeDiaryPage(page) {
+    diaryCurrentPage = page;
+    renderJournal(currentDiaryFilms);
+    const viewJournal = document.getElementById('view-journal');
+    if (viewJournal) viewJournal.scrollIntoView({ behavior: 'smooth' });
 }
 
 function fmtDate(s) { try { const d = new Date(s); return isNaN(d) ? s : d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}); } catch { return s; } }
@@ -948,29 +1014,40 @@ function fmtStars(r) { const n = parseFloat(r); return isNaN(n) ? '' : '★'.rep
 // ── Taste Radar ──
 async function loadTasteRadar() {
     try {
-        const d = await (await fetch(`${API}/api/taste_radar`)).json();
-        drawRadar(d.radar || []); renderBadges(d.badges || []);
+        const u = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+        const d = await (await fetch(`${API}/api/taste_radar?user=${encodeURIComponent(u)}`)).json();
+        drawRadar(d.radar || []);
+        renderBadges(d.badges || []);
     } catch(e) { console.error('Taste error', e); }
 }
 function drawRadar(genres) {
     const cv = document.getElementById('radar-canvas'); if (!cv) return;
-    const ctx = cv.getContext('2d'), w = cv.width, h = cv.height, cx = w/2, cy = h/2, R = 160;
+    const size = 440;
+    cv.width = size;
+    cv.height = size;
+    const ctx = cv.getContext('2d'), w = size, h = size, cx = w/2, cy = h/2;
+    const R = 150;
     ctx.clearRect(0,0,w,h);
-    if (genres.length < 3) return;
+    if (!genres || genres.length < 3) return;
     const n = genres.length, step = Math.PI*2/n;
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1.5;
     for (let r = 0.25; r <= 1; r += 0.25) {
         ctx.beginPath();
         for (let i = 0; i < n; i++) { const a = i*step-Math.PI/2; const x = cx+Math.cos(a)*R*r; const y = cy+Math.sin(a)*R*r; i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
         ctx.closePath(); ctx.stroke();
     }
-    ctx.fillStyle = '#A3A3A3'; ctx.font = '11px Inter,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    for (let i = 0; i < n; i++) { const a = i*step-Math.PI/2; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a)*R,cy+Math.sin(a)*R); ctx.stroke(); ctx.fillText(genres[i].genre,cx+Math.cos(a)*(R+22),cy+Math.sin(a)*(R+22)); }
+    ctx.fillStyle = '#A3A3A3'; ctx.font = 'bold 13px Inter,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = 0; i < n; i++) { 
+        const a = i*step-Math.PI/2; 
+        ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a)*R,cy+Math.sin(a)*R); ctx.stroke(); 
+        const labelOffset = R + 26;
+        ctx.fillText(genres[i].genre, cx+Math.cos(a)*labelOffset, cy+Math.sin(a)*labelOffset); 
+    }
     ctx.beginPath();
     const pts = [];
     for (let i = 0; i < n; i++) { const a = i*step-Math.PI/2; const v = (genres[i].pct||50)/100; const x = cx+Math.cos(a)*R*v; const y = cy+Math.sin(a)*R*v; pts.push({x,y}); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
-    ctx.closePath(); ctx.fillStyle = 'rgba(74,222,128,0.2)'; ctx.fill(); ctx.strokeStyle = '#4ADE80'; ctx.lineWidth = 2; ctx.stroke();
-    pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x,p.y,4,0,Math.PI*2); ctx.fillStyle = '#4ADE80'; ctx.fill(); });
+    ctx.closePath(); ctx.fillStyle = 'rgba(74,222,128,0.25)'; ctx.fill(); ctx.strokeStyle = '#4ADE80'; ctx.lineWidth = 2.5; ctx.stroke();
+    pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x,p.y,4.5,0,Math.PI*2); ctx.fillStyle = '#4ADE80'; ctx.fill(); });
 }
 function renderBadges(badges) {
     const l = document.getElementById('badges-list'); l.innerHTML = '';

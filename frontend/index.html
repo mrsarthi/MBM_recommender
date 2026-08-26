@@ -50,9 +50,11 @@
         <section id="view-discover" class="view">
 
             <!-- Mode Selector Switch -->
-            <div class="discover-mode-selector" style="display: flex; justify-content: center; gap: 8px; margin-bottom: 24px;">
-                <button id="discover-mode-search-btn" class="discover-mode-btn active" onclick="setDiscoverMode('search')">🔍 Search & Log</button>
-                <button id="discover-mode-recommend-btn" class="discover-mode-btn" onclick="setDiscoverMode('recommend')">✦ AI Recommendations</button>
+            <div class="discover-mode-selector-wrap">
+                <div class="discover-mode-selector">
+                    <button id="discover-mode-search-btn" class="discover-mode-btn active" onclick="setDiscoverMode('search')">🔍 Search & Log</button>
+                    <button id="discover-mode-recommend-btn" class="discover-mode-btn" onclick="setDiscoverMode('recommend')">✦ AI Recommendations</button>
+                </div>
             </div>
 
             <!-- 1A. Search & Log Subview -->
@@ -214,6 +216,7 @@
             </div>
             <div id="journal-list" class="journal-list"></div>
             <div id="journal-grid" class="poster-grid" style="display:none;"></div>
+            <div id="journal-pagination" class="journal-pagination"></div>
         </section>
 
         <!-- ===== 4. TASTE RADAR VIEW ===== -->

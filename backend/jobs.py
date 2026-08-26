@@ -172,6 +172,17 @@ def _update_job(job_id, progress, stage, message, status='running', error=None, 
 
 # ── Letterboxd scraping ──
 
+def get_scrape_session():
+    try:
+        from curl_cffi import requests as curl_requests
+        s = curl_requests.Session()
+        s.is_curl_cffi = True
+    except ImportError:
+        s = requests.Session()
+        s.headers.update(BROWSER_HEADERS)
+        s.is_curl_cffi = False
+    return s
+
 def scrape_letterboxd_diary(username, session=None, max_pages=60, on_page=None):
     """
     Scrapes the FULL diary from the paginated /films/diary/ pages.
@@ -181,8 +192,8 @@ def scrape_letterboxd_diary(username, session=None, max_pages=60, on_page=None):
     data-item-slug, data-item-name ("Title (Year)"), a `rated-N` class (N is out of
     10, so stars are N/2) and a /for/YYYY/MM/DD/ watched date.
     """
-    s = session or requests.Session()
-    s.headers.update(BROWSER_HEADERS)
+    s = session or get_scrape_session()
+    is_curl = getattr(s, 'is_curl_cffi', False) or ('curl_cffi' in s.__class__.__module__)
 
     entries = []
     seen_slugs = set()
@@ -190,7 +201,10 @@ def scrape_letterboxd_diary(username, session=None, max_pages=60, on_page=None):
     for page in range(1, max_pages + 1):
         url = "{0}/{1}/films/diary/page/{2}/".format(LB_BASE, username, page)
         try:
-            resp = s.get(url, timeout=15)
+            if is_curl:
+                resp = s.get(url, impersonate="chrome", timeout=15)
+            else:
+                resp = s.get(url, timeout=15)
         except Exception:
             break
         if resp.status_code != 200:
@@ -299,8 +313,8 @@ def scrape_letterboxd_watchlist(username, session=None, max_pages=40):
     swept up the profile avatar - whose alt text is the member's display name - and
     imported it as a film (e.g. a phantom entry titled "Parth Sarthi Mishra").
     """
-    s = session or requests.Session()
-    s.headers.update(BROWSER_HEADERS)
+    s = session or get_scrape_session()
+    is_curl = getattr(s, 'is_curl_cffi', False) or ('curl_cffi' in s.__class__.__module__)
 
     entries = []
     seen = set()
@@ -308,7 +322,10 @@ def scrape_letterboxd_watchlist(username, session=None, max_pages=40):
     for page in range(1, max_pages + 1):
         url = "{0}/{1}/watchlist/page/{2}/".format(LB_BASE, username, page)
         try:
-            resp = s.get(url, timeout=15)
+            if is_curl:
+                resp = s.get(url, impersonate="chrome", timeout=15)
+            else:
+                resp = s.get(url, timeout=15)
         except Exception:
             break
         if resp.status_code != 200:
@@ -527,8 +544,7 @@ def _run_onboarding_pipeline(job_id, username, pin, tmdb_key, gemini_key):
                         status='failed', error='User creation failed')
             return
 
-        session = requests.Session()
-        session.headers.update(BROWSER_HEADERS)
+        session = get_scrape_session()
 
         # 1. Diary - every page, not just the 50-entry RSS window
         _update_job(job_id, 10, 'diary_scrape',

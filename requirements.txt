@@ -11,3 +11,4 @@ requests-cache
 matplotlib
 google-generativeai
 psycopg2-binary
+curl-cffi>=0.7.0

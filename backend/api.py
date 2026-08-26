@@ -238,7 +238,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             )
             # Sanitize any nan or null representations
             cleaned = []
-            for r in records[:150]:
+            for r in records:
                 cleaned.append({
                     'movie_id': r.get('movie_id'),
                     'id': r.get('movie_id'),

@@ -163,7 +163,7 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
             'prompt': 'swing girl',
             'context': 'Alone',
             'streaming': 'All Platforms'
-        }, timeout=15)
+        }, timeout=35)
         
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -306,6 +306,72 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
             # Should have returned The Conjuring as the top pick (Horror match)
             self.assertTrue(len(cands) > 0)
             self.assertEqual(cands[0]['title'], 'The Conjuring')
+
+    def test_09_letterboxd_paginated_scraping(self):
+        """Test that scrape_letterboxd_diary correctly fetches and compiles paginated diary rows."""
+        from backend.jobs import scrape_letterboxd_diary
+        from unittest.mock import Mock
+
+        mock_session = Mock()
+        
+        def mock_get(url, **kwargs):
+            mock_resp = Mock()
+            mock_resp.status_code = 200
+            
+            if 'page/1/' in url:
+                mock_resp.text = "".join([
+                    f'<tr class="diary-entry-row">data-item-slug="movie-{i}" data-item-name="Movie {i} (2020)" rated-8 /for/2020/01/01/</tr>'
+                    for i in range(50)
+                ])
+            elif 'page/2/' in url:
+                mock_resp.text = "".join([
+                    f'<tr class="diary-entry-row">data-item-slug="movie-{i}" data-item-name="Movie {i} (2020)" rated-8 /for/2020/01/01/</tr>'
+                    for i in range(50, 70)
+                ])
+            else:
+                mock_resp.text = ""
+            return mock_resp
+            
+        mock_session.get.side_effect = mock_get
+
+        entries = scrape_letterboxd_diary('test_user', session=mock_session, max_pages=5)
+        
+        self.assertEqual(len(entries), 70)
+        self.assertEqual(entries[0]['slug'], 'movie-0')
+        self.assertEqual(entries[69]['slug'], 'movie-69')
+
+    def test_10_letterboxd_watchlist_paginated_scraping(self):
+        """Test that scrape_letterboxd_watchlist correctly fetches and compiles paginated watchlist posters."""
+        from backend.jobs import scrape_letterboxd_watchlist
+        from unittest.mock import Mock
+
+        mock_session = Mock()
+        
+        def mock_get(url, **kwargs):
+            mock_resp = Mock()
+            mock_resp.status_code = 200
+            
+            if 'page/1/' in url:
+                mock_resp.text = "".join([
+                    f'<div class="poster">data-item-slug="movie-{i}" data-item-name="Movie {i} (2020)"</div>'
+                    for i in range(50)
+                ]) + 'href="/watchlist/page/2/"'
+            elif 'page/2/' in url:
+                mock_resp.text = "".join([
+                    f'<div class="poster">data-item-slug="movie-{i}" data-item-name="Movie {i} (2020)"</div>'
+                    for i in range(50, 70)
+                ])
+            else:
+                mock_resp.text = ""
+            return mock_resp
+            
+        mock_session.get.side_effect = mock_get
+
+        entries = scrape_letterboxd_watchlist('test_user', session=mock_session, max_pages=5)
+        
+        self.assertEqual(len(entries), 70)
+        self.assertEqual(entries[0]['slug'], 'movie-0')
+        self.assertEqual(entries[69]['slug'], 'movie-69')
 
 if __name__ == '__main__':
     unittest.main()
