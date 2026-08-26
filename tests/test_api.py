@@ -79,7 +79,7 @@ class TestCineAIAPI(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             content = resp.read().decode('utf-8')
             self.assertIn('MBMR', content)
-            self.assertIn('Discover New Movies', content)
+            self.assertIn('Mood-Based Movie Recommender', content)
 
     def test_06_direct_movie_title_search(self):
         url = f"{BASE_URL}/api/recommend"

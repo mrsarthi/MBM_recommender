@@ -14,7 +14,7 @@ _pool_lock = __import__('threading').Lock()
 
 # Fast in-memory query cache for instantaneous UI responses (< 0.1ms)
 _query_cache = {}
-_CACHE_TTL = 30.0
+_CACHE_TTL = 86400.0
 
 def _get_cache(key):
     entry = _query_cache.get(key)
@@ -25,15 +25,38 @@ def _get_cache(key):
 def _set_cache(key, data):
     _query_cache[key] = {'data': data, 'time': time.time()}
 
-def invalidate_user_cache(username_or_id=""):
+def invalidate_user_cache(user_id_or_name=""):
     global _query_cache
-    if not username_or_id:
+    if not user_id_or_name:
         _query_cache.clear()
         return
-    u_str = str(username_or_id).lower()
-    to_delete = [k for k in _query_cache if u_str in k.lower()]
-    for k in to_delete:
-        _query_cache.pop(k, None)
+
+    # Resolve to user_id if it's a username string
+    user_id = None
+    if isinstance(user_id_or_name, int):
+        user_id = user_id_or_name
+    elif str(user_id_or_name).isdigit():
+        user_id = int(user_id_or_name)
+    else:
+        try:
+            user = get_user(str(user_id_or_name))
+            if user:
+                user_id = user['id']
+        except Exception:
+            pass
+
+    if user_id is not None:
+        prefix_wl = f"wl_{user_id}"
+        prefix_diary = f"diary_{user_id}"
+        to_delete = [k for k in _query_cache if k == prefix_wl or k.startswith(f"{prefix_diary}_")]
+        for k in to_delete:
+            _query_cache.pop(k, None)
+    else:
+        # Fallback to string matching
+        u_str = str(user_id_or_name).lower()
+        to_delete = [k for k in _query_cache if u_str in k.lower()]
+        for k in to_delete:
+            _query_cache.pop(k, None)
 
 def get_db_pool():
     global _pool
@@ -591,7 +614,7 @@ def add_to_user_watchlist(username: str, movie_data: dict):
     upsert_movies_batch([movie_data])
     m_id = int(movie_data.get('movie_id') or movie_data.get('id'))
     upsert_user_watchlist(user['id'], [{'movie_id': m_id, 'added_date': pd.Timestamp.now().strftime('%Y-%m-%d')}])
-    invalidate_user_cache(username)
+    invalidate_user_cache(user['id'])
     return True, f"Added to Watchlist!"
 
 def remove_from_user_watchlist(username: str, movie_id: int):
@@ -604,7 +627,7 @@ def remove_from_user_watchlist(username: str, movie_id: int):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM user_watchlist WHERE user_id = %s AND movie_id = %s", (user['id'], int(movie_id)))
             conn.commit()
-            invalidate_user_cache(username)
+            invalidate_user_cache(user['id'])
             return True, "Removed from Watchlist."
     finally:
         release_connection(conn)

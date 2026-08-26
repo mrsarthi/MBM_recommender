@@ -13,6 +13,8 @@ let selectedLogMovie = null;
 let watchlistIds = new Set();
 let currentMatchmakerWinner = null;
 let currentWatchlistCluster = 'All';
+let discoverMode = 'search';
+let currentView = 'watchlist';
 
 // ── In-Memory Fast Caches (Instant 0ms Tab Switching) ──
 const watchlistCache = new Map();
@@ -209,6 +211,7 @@ function updateWatchlistBadge(count) {
 
 // ── View Switching ──
 function switchView(name) {
+    currentView = name;
     document.querySelectorAll('.rail-icon').forEach(b => b.classList.toggle('active', b.dataset.view === name));
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     const v = document.getElementById(`view-${name}`);
@@ -222,6 +225,7 @@ function switchView(name) {
     };
     document.getElementById('dock-label').textContent = labels[name] || '';
     
+    if (name === 'discover') setDiscoverMode(discoverMode);
     if (name === 'watchlist') fetchWatchlist();
     if (name === 'journal') fetchDiary();
     if (name === 'taste') loadTasteRadar();
@@ -262,12 +266,15 @@ async function generateRecommendations() {
     }
 
     try {
+        const sourceSelect = document.getElementById('recommend-source-select');
+        const sourceVal = sourceSelect ? sourceSelect.value : 'all';
         const res = await fetch(`${API}/api/recommend`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 prompt,
                 context: document.getElementById('context-select').value,
-                streaming: document.getElementById('stream-select').value
+                streaming: document.getElementById('stream-select').value,
+                source: sourceVal
             })
         });
         const data = await res.json();
@@ -289,6 +296,78 @@ function setVibe(el, text) {
     el.classList.add('active');
     document.getElementById('prompt-input').value = text;
     generateRecommendations();
+}
+
+function openLogForMovieFromCard(m) {
+    selectMovieForLog(m);
+    openLogModal();
+}
+
+function setDiscoverMode(mode) {
+    discoverMode = mode;
+    const searchBtn = document.getElementById('discover-mode-search-btn');
+    const recommendBtn = document.getElementById('discover-mode-recommend-btn');
+    if (searchBtn) searchBtn.classList.toggle('active', mode === 'search');
+    if (recommendBtn) recommendBtn.classList.toggle('active', mode === 'recommend');
+    
+    const searchSubview = document.getElementById('discover-search-subview');
+    const recommendSubview = document.getElementById('discover-recommend-subview');
+    if (searchSubview) searchSubview.style.display = mode === 'search' ? 'block' : 'none';
+    if (recommendSubview) recommendSubview.style.display = mode === 'recommend' ? 'block' : 'none';
+    
+    const grid = document.getElementById('films-grid');
+    if (grid) grid.innerHTML = '';
+}
+
+async function executeDirectMovieSearch() {
+    const query = document.getElementById('direct-search-input').value.trim();
+    if (!query) return;
+    
+    const btn = document.getElementById('direct-search-btn');
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span>`;
+    renderSkeletonGrid(8);
+    
+    try {
+        const res = await fetch(`${API}/api/search_tmdb?q=${encodeURIComponent(query)}`);
+        const data = await res.json();
+        const results = data.results || [];
+        
+        const mapped = results.map(m => {
+            const isSaved = watchlistIds.has(m.id);
+            return {
+                id: m.id,
+                movie_id: m.id,
+                title: m.title,
+                release_date: m.release_date || '',
+                year: (m.release_date || '').split('-')[0] || '',
+                genres: m.genre_ids ? m.genre_ids.map(gid => {
+                    const genreDict = {
+                        28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy',
+                        80: 'Crime', 99: 'Documentary', 18: 'Drama', 10751: 'Family',
+                        14: 'Fantasy', 36: 'History', 27: 'Horror', 10402: 'Music',
+                        9648: 'Mystery', 10749: 'Romance', 878: 'Science Fiction',
+                        10770: 'TV Movie', 53: 'Thriller', 10752: 'War', 37: 'Western'
+                    };
+                    return genreDict[gid] || '';
+                }).filter(Boolean).join(', ') : '',
+                overview: m.overview || '',
+                poster_path: m.poster_path || '',
+                backdrop_path: m.backdrop_path || '',
+                ai_score: 3.5
+            };
+        });
+        
+        currentPicks = mapped;
+        renderGrid(mapped);
+    } catch(e) {
+        console.error('Search error', e);
+        const grid = document.getElementById('films-grid');
+        if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:var(--text3);">Search failed. Please try again.</div>';
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>`;
+    }
 }
 
 function renderGrid(movies) {
@@ -323,6 +402,9 @@ function renderGrid(movies) {
         card.innerHTML = `
             ${poster ? `<img src="${poster}" alt="${m.title}" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
             <div class="wl-card-actions" onclick="event.stopPropagation()">
+                <button class="wl-act-btn diary-add" title="Rate & Log Film" onclick="openLogForMovieFromCard(${JSON.stringify(m).replace(/"/g, '&quot;')})">
+                    👁️
+                </button>
                 <button class="wl-act-btn bookmark-add ${isSaved ? 'in-watchlist' : ''}" title="${isSaved ? 'In Watchlist' : 'Add to Watchlist'}" onclick="toggleWatchlistFromCard(${JSON.stringify(m).replace(/"/g, '&quot;')}, this)">
                     ${isSaved ? '✓' : '🔖'}
                 </button>
@@ -900,7 +982,12 @@ function showToast(message, glyph = '✓') {
 function openLogModal() { 
     document.getElementById('log-modal').classList.add('open'); 
     const searchInput = document.getElementById('log-search-input');
-    if (searchInput && !selectedLogMovie) searchInput.focus();
+    if (searchInput) {
+        if (!selectedLogMovie) {
+            resetLogModalPreview();
+        }
+        searchInput.focus();
+    }
 }
 
 function closeLogModal() { 
@@ -932,7 +1019,15 @@ function selectMovieForLog(m) {
     
     if (titleEl) titleEl.textContent = m.title || 'Selected Film';
     if (yearEl) yearEl.textContent = (m.release_date || m.year || '').split('-')[0];
-    if (posterEl) posterEl.src = m.poster_path ? `${IMG200}${m.poster_path}` : '';
+    if (posterEl) {
+        if (m.poster_path) {
+            posterEl.src = `${IMG200}${m.poster_path}`;
+            posterEl.style.display = 'block';
+        } else {
+            posterEl.src = '';
+            posterEl.style.display = 'none';
+        }
+    }
     if (predEl) predEl.textContent = `★ ${(m.ai_score || 3.8).toFixed(1)}`;
     const slider = document.getElementById('rating-slider');
     if (slider) updateSliderLabel(slider.value);
@@ -951,13 +1046,11 @@ async function searchTMDBLog(q) {
                 it.className = 'log-dd-item';
                 it.innerHTML = `<span>${m.title}</span><span style="color:var(--text3)">${(m.release_date||'').split('-')[0]}</span>`;
                 
-                const handler = (e) => {
+                it.addEventListener('click', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     selectMovieForLog(m);
-                };
-                it.addEventListener('click', handler);
-                it.addEventListener('touchend', handler);
+                });
                 dd.appendChild(it);
             });
         } else { dd.style.display = 'none'; }
@@ -1031,9 +1124,34 @@ async function submitLogMovie() {
         if (currentView === 'discover') generateRecommendations();
         
         showToast(d.message || `Logged "${selectedLogMovie.title}" (${ratingVal}★) to Diary!`);
+        selectedLogMovie = null;
+        resetLogModalPreview();
     } catch(err) { 
         console.error('Error logging movie:', err);
         showToast('Failed to log film. Please try again.', '⚠️'); 
+    }
+}
+
+function resetLogModalPreview() {
+    selectedLogMovie = null;
+    const titleEl = document.getElementById('modal-log-title');
+    const yearEl = document.getElementById('modal-log-year');
+    const posterEl = document.getElementById('modal-log-poster');
+    const predEl = document.getElementById('modal-ai-pred');
+    const searchInput = document.getElementById('log-search-input');
+    const slider = document.getElementById('rating-slider');
+    
+    if (titleEl) titleEl.textContent = 'Select a Movie';
+    if (yearEl) yearEl.textContent = '';
+    if (posterEl) {
+        posterEl.src = '';
+        posterEl.style.display = 'none';
+    }
+    if (predEl) predEl.textContent = '★ --';
+    if (searchInput) searchInput.value = '';
+    if (slider) {
+        slider.value = 4.5;
+        updateSliderLabel(4.5);
     }
 }
 

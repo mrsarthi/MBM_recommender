@@ -832,6 +832,7 @@ body {
 .wl-act-btn:hover { background: rgba(239, 68, 68, 0.9); border-color: #ef4444; }
 .wl-act-btn.bookmark-add:hover { background: var(--accent); color: #052e16; border-color: var(--accent); }
 .wl-act-btn.in-watchlist { background: var(--accent); color: #052e16; border-color: var(--accent); }
+.wl-act-btn.diary-add:hover { background: #3b82f6; border-color: #3b82f6; }
 
 .wl-runtime-tag {
     position: absolute;
@@ -1239,5 +1240,26 @@ body {
         padding: 12px 14px;
         font-size: 13px;
     }
+}
+
+/* ---- DISCOVER MODE SELECTOR ---- */
+.discover-mode-btn {
+    padding: 7px 16px;
+    border-radius: var(--pill);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text2);
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+}
+.discover-mode-btn:hover { border-color: #555; color: var(--text); }
+.discover-mode-btn.active {
+    background: #fff;
+    color: #1a1a1a;
+    border-color: #fff;
+    font-weight: 600;
 }
 

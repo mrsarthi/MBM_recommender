@@ -470,6 +470,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         user = self._get_request_user(body)
         context = body.get('context', 'Alone')
         streaming = body.get('streaming', 'All Platforms')
+        source = body.get('source', 'all')
 
         # Load user watched titles & IDs from Neon DB
         watched_titles = []
@@ -488,7 +489,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         picks = analyze(
             watched_titles, watched_ids, [],
             ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders,
-            user_context=context, streaming_filter=streaming, raw_prompt=prompt
+            user_context=context, streaming_filter=streaming, raw_prompt=prompt,
+            source=source, username=user
         )
 
         # Sanitize picks against nan

@@ -153,7 +153,7 @@ def _is_strong_title_match(norm_query, norm_title):
     return False
 
 
-def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders, user_context="Alone", streaming_filter="All Platforms", raw_prompt=""):
+def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders, user_context="Alone", streaming_filter="All Platforms", raw_prompt="", source="all", username=None):
     """
     Finds candidates matching direct movie name, query/mood, or similar films,
     scores candidates using personal AI model, and returns curated recommendations.
@@ -167,6 +167,101 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     }
     idToGenre = {v: k for k, v in genreDict.items()}
     
+    if source == "watchlist" and username:
+        from backend.db import get_user_watchlist
+        wl_movies = get_user_watchlist(username)
+        if not wl_movies:
+            return []
+            
+        desiredGenres = ai_analysis.get('genres', [])
+        search_query = (ai_analysis.get('search_query') or '').strip().lower()
+        suggested_titles = [titleNormalize(t) for t in ai_analysis.get('suggested_titles', []) if t]
+        
+        candidates = []
+        for m in wl_movies:
+            m_genres = [g.strip() for g in str(m.get('genres', '')).split(',') if g.strip()]
+            m_title = str(m.get('title') or '').strip()
+            m_norm_title = titleNormalize(m_title)
+            m_director = str(m.get('director') or '').strip().lower()
+            m_overview = str(m.get('overview') or '').strip().lower()
+            
+            genre_match = False
+            if desiredGenres:
+                genre_match = any(g in m_genres for g in desiredGenres)
+            else:
+                genre_match = True
+                
+            query_match = False
+            if search_query:
+                query_match = (
+                    search_query in m_title.lower() or 
+                    search_query in m_director or 
+                    search_query in m_overview or
+                    any(search_query in g.lower() for g in m_genres)
+                )
+            else:
+                query_match = True
+                
+            title_match = False
+            if suggested_titles:
+                title_match = m_norm_title in suggested_titles
+            else:
+                title_match = True
+                
+            is_match = False
+            if not desiredGenres and not search_query and not suggested_titles:
+                is_match = True
+            else:
+                is_match = (
+                    (desiredGenres and genre_match) or 
+                    (search_query and query_match) or 
+                    (suggested_titles and title_match)
+                )
+                
+            if is_match:
+                candidates.append(m)
+                
+        if not candidates:
+            candidates = wl_movies
+            
+        final_picks = []
+        for m in candidates:
+            m_genres = [g.strip() for g in str(m.get('genres', '')).split(',') if g.strip()]
+            m_overview = m.get('overview', '')
+            m_title = m.get('title', '')
+            m_norm_title = titleNormalize(m_title)
+            
+            if ai_model:
+                score = predict_movie_score(
+                    ai_model, ai_columns, ai_vectorizer, ai_encoders,
+                    genres=m_genres, context=user_context, overview=m_overview,
+                    runtime=m.get('runtime')
+                )
+                for hated in hated_movies:
+                    if (hated in m_norm_title) or (m_norm_title in hated):
+                        score = max(0.5, score - 2.5)
+                        break
+                m['ai_score'] = score
+            else:
+                m['ai_score'] = 3.5
+                
+            m['id'] = m.get('movie_id')
+            m['is_direct_match'] = False
+            m['is_watched'] = False
+            final_picks.append(m)
+            
+        if streaming_filter != "All Platforms" and final_picks:
+            def check_stream(m):
+                provs = get_watch_providers(m.get('movie_id'))
+                m['providers'] = provs
+                return m if any(streaming_filter.lower() in p.lower() for p in provs) else None
+                
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                final_picks = [m for m in executor.map(check_stream, final_picks) if m]
+                
+        final_picks.sort(key=lambda x: x.get('ai_score', 0), reverse=True)
+        return final_picks
+
     direct_matches = []
     results = []
     seen_ids = set()

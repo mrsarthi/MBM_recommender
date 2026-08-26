@@ -246,5 +246,66 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
         self.assertEqual(total, 5)
         self.assertGreater(avg_r, 4.0)
 
+    def test_06_watchlist_mood_recommendation(self):
+        """Test that /api/recommend with source='watchlist' correctly filters and returns watchlist films."""
+        from backend.db import add_to_user_watchlist, get_or_create_user
+        from unittest.mock import patch, Mock
+
+        test_username = "rec_test_user_99"
+        u = get_or_create_user(test_username)
+        
+        # Add a specific sci-fi movie and a horror movie to watchlist
+        m_scifi = {
+            'movie_id': 27205, # Inception
+            'title': 'Inception',
+            'genres': 'Science Fiction, Action, Thriller',
+            'overview': 'Cobb steals information from deep within the subconscious.',
+            'director': 'Christopher Nolan',
+            'runtime': 148,
+            'vote_average': 8.3,
+            'poster_path': '/qmDpN6Ud1A1BUp9zJmUkzICJuUk.jpg',
+            'backdrop_path': '/s3Tld83RKY5zZNV68HCk76zLEBh.jpg'
+        }
+        m_horror = {
+            'movie_id': 138843, # The Conjuring
+            'title': 'The Conjuring',
+            'genres': 'Horror, Thriller',
+            'overview': 'Paranormal investigators work to help a family.',
+            'director': 'James Wan',
+            'runtime': 112,
+            'vote_average': 7.5,
+            'poster_path': '/ff906214.jpg',
+            'backdrop_path': '/bb906214.jpg'
+        }
+        
+        add_to_user_watchlist(test_username, m_scifi)
+        add_to_user_watchlist(test_username, m_horror)
+
+        # Patch interpret_query_with_ai directly to bypass live API calls
+        with patch('backend.api.interpret_query_with_ai') as mock_interpret:
+            mock_interpret.return_value = {
+                'genres': ['Horror'],
+                'search_query': 'paranormal',
+                'suggested_titles': ['The Conjuring']
+            }
+
+            # Post recommendation request with source='watchlist'
+            resp = requests.post(f"{API_URL}/api/recommend", json={
+                'username': test_username,
+                'prompt': 'something scary and paranormal',
+                'context': 'Alone',
+                'streaming': 'All Platforms',
+                'source': 'watchlist'
+            })
+            
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertIn('candidates', data)
+            cands = data['candidates']
+            
+            # Should have returned The Conjuring as the top pick (Horror match)
+            self.assertTrue(len(cands) > 0)
+            self.assertEqual(cands[0]['title'], 'The Conjuring')
+
 if __name__ == '__main__':
     unittest.main()

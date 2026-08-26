@@ -41,9 +41,6 @@
         <button class="rail-icon" onclick="openSyncModal()" title="Sync Letterboxd">
             <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M19 16v-6h-6"/><path d="M3.5 14a8 8 0 0 0 13.9-2"/><path d="M16.5 6a8 8 0 0 0-13.9 2"/></svg>
         </button>
-        <button class="rail-icon" onclick="openLogModal()" title="Rate & Log Film">
-            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="7" r="4"/><path d="M2 19c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>
-        </button>
     </aside>
 
     <!-- Main Content -->
@@ -52,44 +49,74 @@
         <!-- ===== 1. DISCOVER VIEW ===== -->
         <section id="view-discover" class="view">
 
-            <!-- Big Search Bar -->
-            <div class="search-zone">
-                <div class="search-bar">
-                    <input id="prompt-input" type="text" placeholder="Search any movie title, director, mood, or vibe..." autocomplete="off">
-                    <button id="generate-btn" class="search-go" onclick="generateRecommendations()">
-                        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>
-                    </button>
+            <!-- Mode Selector Switch -->
+            <div class="discover-mode-selector" style="display: flex; justify-content: center; gap: 8px; margin-bottom: 24px;">
+                <button id="discover-mode-search-btn" class="discover-mode-btn active" onclick="setDiscoverMode('search')">🔍 Search & Log</button>
+                <button id="discover-mode-recommend-btn" class="discover-mode-btn" onclick="setDiscoverMode('recommend')">✦ AI Recommendations</button>
+            </div>
+
+            <!-- 1A. Search & Log Subview -->
+            <div id="discover-search-subview" class="discover-subview">
+                <div class="search-zone">
+                    <div class="search-bar">
+                        <input id="direct-search-input" type="text" placeholder="Search movie title or director on TMDB..." autocomplete="off" onkeyup="if(event.key==='Enter')executeDirectMovieSearch()">
+                        <button id="direct-search-btn" class="search-go" onclick="executeDirectMovieSearch()">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>
+                        </button>
+                    </div>
                 </div>
             </div>
 
-            <!-- Vibe Pills -->
-            <div class="vibe-row">
-                <span class="vibe active" onclick="setVibe(this,'Mind-Bending')">Mind-Bending</span>
-                <span class="vibe" onclick="setVibe(this,'Neo-Noir')">Neo-Noir</span>
-                <span class="vibe" onclick="setVibe(this,'Cyberpunk')">Cyberpunk</span>
-                <span class="vibe" onclick="setVibe(this,'Atmospheric')">Atmospheric</span>
-                <span class="vibe" onclick="setVibe(this,'Sci-Fi')">Sci-Fi</span>
-                <span class="vibe" onclick="setVibe(this,'Thriller')">Thriller</span>
-                <span class="vibe" onclick="setVibe(this,'Indie')">Indie</span>
-                <span class="vibe" onclick="setVibe(this,'Horror')">Horror</span>
-            </div>
+            <!-- 1B. AI Recommendation Subview -->
+            <div id="discover-recommend-subview" class="discover-subview" style="display: none;">
+                <!-- Big Search Bar -->
+                <div class="search-zone" style="padding-bottom: 12px;">
+                    <div class="search-bar">
+                        <input id="prompt-input" type="text" placeholder="Describe your movie mood or vibe (e.g. moody rain noir)..." autocomplete="off" onkeyup="if(event.key==='Enter')generateRecommendations()">
+                        <button id="generate-btn" class="search-go" onclick="generateRecommendations()">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>
+                        </button>
+                    </div>
+                </div>
 
-            <!-- Filter Row -->
-            <div class="filter-row">
-                <select id="context-select" onchange="generateRecommendations()">
-                    <option value="Alone">Context: Alone</option>
-                    <option value="With Partner">Context: With Partner</option>
-                    <option value="Friends Night">Context: Friends Night</option>
-                    <option value="Family">Context: Family</option>
-                </select>
-                <select id="stream-select" onchange="generateRecommendations()">
-                    <option value="All Platforms">All Streaming Platforms</option>
-                    <option value="Netflix">Netflix</option>
-                    <option value="Apple TV">Apple TV</option>
-                    <option value="Prime Video">Prime Video</option>
-                    <option value="Disney+">Disney+</option>
-                    <option value="Max">Max</option>
-                </select>
+                <!-- Recommendation Source Selector -->
+                <div class="recommend-source-row" style="display: flex; justify-content: center; align-items: center; gap: 12px; margin-bottom: 16px; font-size: 13px; color: var(--text2);">
+                    <span>Find recommendations from:</span>
+                    <select id="recommend-source-select" style="background: var(--bg-raised); border: 1px solid var(--border); color: var(--text2); padding: 6px 12px; border-radius: var(--pill); font-size: 12px; outline: none; cursor: pointer;">
+                        <option value="all">Discover New Movies</option>
+                        <option value="watchlist">My Watchlist</option>
+                    </select>
+                </div>
+
+                <!-- Vibe Pills -->
+                <div class="vibe-row">
+                    <span class="vibe active" onclick="setVibe(this,'Mind-Bending')">Mind-Bending</span>
+                    <span class="vibe" onclick="setVibe(this,'Neo-Noir')">Neo-Noir</span>
+                    <span class="vibe" onclick="setVibe(this,'Cyberpunk')">Cyberpunk</span>
+                    <span class="vibe" onclick="setVibe(this,'Atmospheric')">Atmospheric</span>
+                    <span class="vibe" onclick="setVibe(this,'Sci-Fi')">Sci-Fi</span>
+                    <span class="vibe" onclick="setVibe(this,'Thriller')">Thriller</span>
+                    <span class="vibe" onclick="setVibe(this,'Indie')">Indie</span>
+                    <span class="vibe" onclick="setVibe(this,'Horror')">Horror</span>
+                </div>
+
+                <!-- Filter Row -->
+                <div class="filter-row">
+                    <select id="context-select" onchange="generateRecommendations()">
+                        <option value="Alone">Context: Alone</option>
+                        <option value="With Partner">Context: With Partner</option>
+                        <option value="Friends Night">Context: Friends Night</option>
+                        <option value="Family">Context: Family</option>
+                    </select>
+                    <select id="stream-select" onchange="generateRecommendations()">
+                        <option value="All Platforms">All Streaming Platforms</option>
+                        <option value="Netflix">Netflix</option>
+                        <option value="Apple TV">Apple TV</option>
+                        <option value="Prime Video">Prime Video</option>
+                        <option value="Disney+">Disney+</option>
+                        <option value="Max">Max</option>
+                    </select>
+                </div>
             </div>
 
             <!-- Film Cards Grid -->
@@ -324,7 +351,7 @@
                     <div id="log-search-dropdown" class="log-dropdown"></div>
                 </div>
                 <div id="selected-log-preview" class="log-preview">
-                    <img id="modal-log-poster" class="log-poster" src="" alt="">
+                    <img id="modal-log-poster" class="log-poster" src="" alt="" style="display: none;">
                     <div class="log-info">
                         <h4 id="modal-log-title">Select a Movie</h4>
                         <p id="modal-log-year" class="log-year"></p>
