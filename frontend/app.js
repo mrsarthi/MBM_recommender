@@ -218,6 +218,13 @@ function switchView(name) {
     const v = document.getElementById(`view-${name}`);
     if (v) v.classList.add('active');
     
+    // Reset scroll position to top on tab switch
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    const mc = document.querySelector('.main-content');
+    if (mc) mc.scrollTop = 0;
+    
     const journalCount = document.getElementById('journal-total-count')?.textContent || document.getElementById('nav-count')?.textContent || '0';
     const labels = { 
         discover: 'Discover New Movies', 

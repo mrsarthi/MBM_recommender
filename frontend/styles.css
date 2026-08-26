@@ -1171,10 +1171,17 @@ body {
 
 /* ---- MOBILE RESPONSIVE SYSTEM (< 768px) ---- */
 @media (max-width: 768px) {
-    html, body {
-        overflow-x: hidden;
-        max-width: 100vw;
+    html {
         height: 100%;
+        overflow-x: hidden;
+        overflow-y: auto;
+    }
+    body {
+        min-height: 100vh;
+        height: auto;
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
         padding-bottom: env(safe-area-inset-bottom);
     }
     .app-shell {
@@ -1183,7 +1190,7 @@ body {
         height: auto;
         min-height: 100vh;
         max-width: 100vw;
-        overflow-x: hidden;
+        overflow: visible;
     }
     .icon-rail {
         position: fixed;
@@ -1207,9 +1214,9 @@ body {
         height: 44px;
     }
     .main-content {
+        flex: 1;
         padding: 0 0 80px 0;
-        overflow-y: visible;
-        overflow-x: hidden;
+        overflow: visible;
         height: auto;
         max-width: 100vw;
         box-sizing: border-box;
@@ -1218,7 +1225,7 @@ body {
         padding: 16px 14px 24px 14px;
         max-width: 100vw;
         box-sizing: border-box;
-        overflow-x: hidden;
+        overflow: visible;
     }
     .bottom-dock {
         display: none;
