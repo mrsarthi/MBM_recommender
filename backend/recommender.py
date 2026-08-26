@@ -153,11 +153,23 @@ def _is_strong_title_match(norm_query, norm_title):
     return False
 
 
-def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders, user_context="Alone", streaming_filter="All Platforms", raw_prompt="", source="all", username=None):
+def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders, user_context="Alone", streaming_filter="All Platforms", raw_prompt="", source="all", username=None, tmdb_key=None):
     """
     Finds candidates matching direct movie name, query/mood, or similar films,
     scores candidates using personal AI model, and returns curated recommendations.
     """
+    active_tmdb = (tmdb_key or '').strip()
+    if not active_tmdb and username:
+        try:
+            from backend.db import get_user
+            u_obj = get_user(username)
+            if u_obj and u_obj.get('tmdb_key'):
+                active_tmdb = str(u_obj['tmdb_key']).strip()
+        except Exception:
+            pass
+    if not active_tmdb:
+        active_tmdb = TMDB_KEY or ''
+
     genreDict = {
         'Action': 28, 'Adventure': 12, 'Animation': 16, 'Comedy': 35,
         'Crime': 80, 'Documentary': 99, 'Drama': 18, 'Family': 10751,
@@ -250,11 +262,13 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             m['is_watched'] = False
             final_picks.append(m)
             
-        if streaming_filter != "All Platforms" and final_picks:
+        if streaming_filter != "All Platforms":
             def check_stream(m):
-                provs = get_watch_providers(m.get('movie_id'))
-                m['providers'] = provs
-                return m if any(streaming_filter.lower() in p.lower() for p in provs) else None
+                provs = get_watch_providers(m.get('id'), tmdb_key=active_tmdb)
+                if any(streaming_filter.lower() in p.lower() for p in provs):
+                    m['providers'] = provs
+                    return m
+                return None
                 
             with ThreadPoolExecutor(max_workers=8) as executor:
                 final_picks = [m for m in executor.map(check_stream, final_picks) if m]
@@ -279,7 +293,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     # For a pure vibe query, a title search only contributes films that happen to share
     # the mood word as a name (searching "thriller" surfacing the film *Thriller*).
     # Genre discovery below is the right source for those, so skip the title pass.
-    if clean_raw and not is_mood:
+    if clean_raw and not is_mood and active_tmdb:
         search_queries = [clean_raw]
         # Singular/plural retry helps real titles, but on a mood word it only drags in
         # more same-named films, so only do it when the query looks like a title.
@@ -291,10 +305,10 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
 
         for q in search_queries:
             try:
-                resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': TMDB_KEY, 'query': q}, timeout=6).json()
+                resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': q}, timeout=6).json()
                 matches = resp.get('results', []) if isinstance(resp, dict) else []
                 if not matches:
-                    resp2 = http_session.get(f"{TMDB_BASE_URL}/search/multi", params={'api_key': TMDB_KEY, 'query': q}, timeout=6).json()
+                    resp2 = http_session.get(f"{TMDB_BASE_URL}/search/multi", params={'api_key': active_tmdb, 'query': q}, timeout=6).json()
                     matches = [m for m in resp2.get('results', []) if m.get('media_type') != 'person'] if isinstance(resp2, dict) else []
 
                 for m in matches[:10]:
@@ -325,7 +339,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
         if direct_matches:
             top_id = direct_matches[0].get('id')
             try:
-                r_resp = http_session.get(f"{TMDB_BASE_URL}/movie/{top_id}/recommendations", params={'api_key': TMDB_KEY}, timeout=5).json()
+                r_resp = http_session.get(f"{TMDB_BASE_URL}/movie/{top_id}/recommendations", params={'api_key': active_tmdb}, timeout=5).json()
                 for rm in r_resp.get('results', [])[:10]:
                     if rm.get('id') and rm.get('id') not in seen_ids:
                         seen_ids.add(rm.get('id'))
@@ -334,10 +348,10 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
 
     # 2. Suggested Titles from Gemini (concurrent lookup)
     suggested_titles = ai_analysis.get('suggested_titles', [])
-    if suggested_titles:
+    if suggested_titles and active_tmdb:
         def fetch_title(t):
             try:
-                resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': TMDB_KEY, 'query': t}, timeout=5).json()
+                resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': t}, timeout=5).json()
                 m = resp.get('results', []) if isinstance(resp, dict) else []
                 return m[0] if m else None
             except Exception: return None
@@ -350,9 +364,9 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
 
     # 3. Search Query / Theme from Gemini
     search_query = ai_analysis.get('search_query', '')
-    if search_query and search_query != clean_raw:
+    if search_query and search_query != clean_raw and active_tmdb:
         try:
-            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': TMDB_KEY, 'query': search_query}, timeout=6).json()
+            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': search_query}, timeout=6).json()
             matches = resp.get('results', []) if isinstance(resp, dict) else []
             for m in matches[:10]:
                 if m.get('id') and m.get('id') not in seen_ids:
@@ -362,13 +376,13 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
 
     # 4. Discover by Genres
     desiredGenres = ai_analysis.get('genres', [])
-    if desiredGenres:
+    if desiredGenres and active_tmdb:
         targetGenreIds = [str(genreDict[name]) for name in desiredGenres if name in genreDict]
         if targetGenreIds:
             genreIdString = "|".join(targetGenreIds)
             discoverUrl = f"{TMDB_BASE_URL}/discover/movie"
             discoverParams = {
-                'api_key': TMDB_KEY, 'with_genres': genreIdString,
+                'api_key': active_tmdb, 'with_genres': genreIdString,
                 'vote_average.gte': 6.2, 'vote_count.gte': 300, 
                 'sort_by': 'popularity.desc', 'language': 'en-US', 'page': 1
             }

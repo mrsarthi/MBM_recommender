@@ -277,13 +277,25 @@ async function generateRecommendations() {
     try {
         const sourceSelect = document.getElementById('recommend-source-select');
         const sourceVal = sourceSelect ? sourceSelect.value : 'all';
+        const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+        const tmdbKey = (await MBMRStorage.get('tmdb_key')) || '';
+        const geminiKey = (await MBMRStorage.get('gemini_key')) || '';
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (tmdbKey) headers['X-TMDB-Key'] = tmdbKey;
+        if (geminiKey) headers['X-Gemini-Key'] = geminiKey;
+
         const res = await fetch(`${API}/api/recommend`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+            headers,
             body: JSON.stringify({
                 prompt,
                 context: document.getElementById('context-select').value,
                 streaming: document.getElementById('stream-select').value,
-                source: sourceVal
+                source: sourceVal,
+                username,
+                tmdb_key: tmdbKey,
+                gemini_key: geminiKey
             })
         });
         const data = await res.json();
@@ -338,7 +350,14 @@ async function executeDirectMovieSearch() {
     renderSkeletonGrid(8);
     
     try {
-        const res = await fetch(`${API}/api/search_tmdb?q=${encodeURIComponent(query)}`);
+        const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+        const tmdbKey = (await MBMRStorage.get('tmdb_key')) || '';
+        const headers = {};
+        if (tmdbKey) headers['X-TMDB-Key'] = tmdbKey;
+
+        const res = await fetch(`${API}/api/search_tmdb?q=${encodeURIComponent(query)}&user=${encodeURIComponent(username)}`, {
+            headers
+        });
         const data = await res.json();
         const results = data.results || [];
         

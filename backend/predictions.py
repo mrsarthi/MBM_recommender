@@ -164,11 +164,12 @@ def predict_movie_score(model, feature_cols, vectorizer, encoders, genres=None, 
     return float(np.clip(pred, 0.5, 5.0))
 
 def get_post_watch_recommendations(movie_id, watched_titles=None, watched_ids=None, ai_model=None,
-                                   ai_columns=None, ai_vectorizer=None, ai_encoders=None, top_n=6):
+                                   ai_columns=None, ai_vectorizer=None, ai_encoders=None, top_n=6, tmdb_key=None):
     """
     Fetches ripple recommendations on TMDB for a watched movie.
     """
-    if not TMDB_KEY or not movie_id: return []
+    active_tmdb = (tmdb_key or TMDB_KEY or '').strip()
+    if not active_tmdb or not movie_id: return []
 
     watched_titles = set(watched_titles or [])
     watched_ids = set(watched_ids or [])
@@ -184,12 +185,12 @@ def get_post_watch_recommendations(movie_id, watched_titles=None, watched_ids=No
     candidates = []
     try:
         url = f"{TMDB_BASE_URL}/movie/{movie_id}/recommendations"
-        resp = requests.get(url, params={'api_key': TMDB_KEY, 'language': 'en-US'}, timeout=8).json()
+        resp = requests.get(url, params={'api_key': active_tmdb, 'language': 'en-US'}, timeout=8).json()
         results = resp.get('results', []) if isinstance(resp, dict) else []
         
         if len(results) < 5:
             sim_url = f"{TMDB_BASE_URL}/movie/{movie_id}/similar"
-            sim_resp = requests.get(sim_url, params={'api_key': TMDB_KEY, 'language': 'en-US'}, timeout=8).json()
+            sim_resp = requests.get(sim_url, params={'api_key': active_tmdb, 'language': 'en-US'}, timeout=8).json()
             if isinstance(sim_resp, dict):
                 results.extend(sim_resp.get('results', []))
                 
@@ -220,18 +221,19 @@ def get_post_watch_recommendations(movie_id, watched_titles=None, watched_ids=No
 
 _providers_cache = {}
 
-def get_watch_providers(movie_id, region='US'):
+def get_watch_providers(movie_id, region='US', tmdb_key=None):
     """
     Fetches streaming flatrate providers from TMDB (with fast RAM cache).
     """
-    if not TMDB_KEY or not movie_id: return []
-    cache_key = f"{movie_id}_{region}"
+    active_tmdb = (tmdb_key or TMDB_KEY or '').strip()
+    if not active_tmdb or not movie_id: return []
+    cache_key = f"{movie_id}_{region}_{active_tmdb[:6]}"
     if cache_key in _providers_cache:
         return _providers_cache[cache_key]
 
     try:
         url = f"{TMDB_BASE_URL}/movie/{movie_id}/watch/providers"
-        resp = requests.get(url, params={'api_key': TMDB_KEY}, timeout=4).json()
+        resp = requests.get(url, params={'api_key': active_tmdb}, timeout=4).json()
         if isinstance(resp, dict):
             flatrate = resp.get('results', {}).get(region, {}).get('flatrate', [])
             provs = [p.get('provider_name') for p in flatrate if p.get('provider_name')]

@@ -6,9 +6,9 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import pandas as pd
 
-from backend.config import BASE_DIR, TMDB_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME
+from backend.config import BASE_DIR, TMDB_KEY, GEMINI_API_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME
 from backend.db import (
-    init_db, get_or_create_user, verify_user_pin, get_user_diary,
+    init_db, get_user, get_or_create_user, verify_user_pin, get_user_diary,
     get_user_watchlist, add_to_user_watchlist, remove_from_user_watchlist,
     upsert_movies_batch, upsert_user_diary
 )
@@ -46,6 +46,46 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 return clean_h
             return ''
         return (LETTERBOXD_USERNAME or '').strip().lstrip('@').lower()
+
+    def _get_request_keys(self, user=None, body=None, query=None):
+        """
+        Resolves TMDB and Gemini API keys with fallback priority:
+        1. Explicit HTTP Headers (X-TMDB-Key, X-Gemini-Key)
+        2. Body / Query parameter (tmdb_key, gemini_key)
+        3. Database user profile (users.tmdb_key, users.gemini_key)
+        4. Environment variables (config.TMDB_KEY, config.GEMINI_API_KEY)
+        """
+        tmdb = (
+            self.headers.get('X-TMDB-Key') or 
+            (body.get('tmdb_key') if isinstance(body, dict) else '') or
+            (query.get('tmdb_key', [''])[0] if isinstance(query, dict) else '') or
+            ''
+        ).strip()
+        
+        gemini = (
+            self.headers.get('X-Gemini-Key') or 
+            (body.get('gemini_key') if isinstance(body, dict) else '') or
+            (query.get('gemini_key', [''])[0] if isinstance(query, dict) else '') or
+            ''
+        ).strip()
+
+        if user and (not tmdb or not gemini):
+            try:
+                user_obj = get_user(user)
+                if user_obj:
+                    if not tmdb and user_obj.get('tmdb_key'):
+                        tmdb = str(user_obj['tmdb_key']).strip()
+                    if not gemini and user_obj.get('gemini_key'):
+                        gemini = str(user_obj['gemini_key']).strip()
+            except Exception:
+                pass
+
+        if not tmdb and TMDB_KEY and TMDB_KEY != 'YOUR_TMDB_API_KEY_HERE':
+            tmdb = TMDB_KEY
+        if not gemini and GEMINI_API_KEY and GEMINI_API_KEY != 'YOUR_GEMINI_API_KEY_HERE':
+            gemini = GEMINI_API_KEY
+
+        return tmdb, gemini
 
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
@@ -126,10 +166,32 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._handle_retrain(body)
         elif path == '/api/import_csv':
             self._handle_import_csv(body)
+        elif path == '/api/user/keys':
+            self._handle_update_keys(body)
         else:
             self._send_json({'error': 'POST endpoint not found'}, 404)
 
     # ── Auth & Onboarding Handlers ──
+
+    def _handle_update_keys(self, body):
+        user = self._get_request_user(body)
+        pin = str(body.get('pin') or '').strip()
+        tmdb = (body.get('tmdb_key') or self.headers.get('X-TMDB-Key') or '').strip()
+        gemini = (body.get('gemini_key') or self.headers.get('X-Gemini-Key') or '').strip()
+
+        if not user:
+            self._send_json({'success': False, 'message': 'Username is required'}, 400)
+            return
+
+        u = get_or_create_user(user, pin=pin or None, tmdb_key=tmdb or None, gemini_key=gemini or None)
+        if u:
+            self._send_json({'success': True, 'message': 'API keys updated successfully', 'user': {
+                'username': u['username'],
+                'tmdb_key': u.get('tmdb_key', ''),
+                'gemini_key': u.get('gemini_key', '')
+            }})
+        else:
+            self._send_json({'success': False, 'message': 'Failed to update user keys'}, 500)
 
     def _handle_import_csv(self, body):
         user = self._get_request_user(body)
@@ -389,39 +451,45 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
     def _handle_pick_tonight(self, body):
         user = self._get_request_user(body)
-        ai_model, ai_columns, ai_vectorizer, ai_encoders = get_or_train_user_model(user) if user else (None, None, None, None)
-        
-        # Load user's watchlist from DB
-        items = []
-        if user:
-            raw_items = get_user_watchlist(user)
-            for r in raw_items:
-                genres = str(r.get('genres') or '').split(',')
-                genres = [g.strip() for g in genres if g.strip()]
-                runtime = int(r.get('runtime') or 0)
-                overview = str(r.get('overview') or '')
-                ai_score = 3.8
-                if ai_model:
-                    ai_score = round(predict_movie_score(
-                        ai_model, ai_columns, ai_vectorizer, ai_encoders,
-                        genres=genres, overview=overview,
-                        director=str(r.get('director') or ''), runtime=runtime
-                    ), 1)
+        tmdb_key, _ = self._get_request_keys(user=user, body=body)
+        if not user:
+            self._send_json({'success': False, 'movie': None, 'message': 'Username is required'})
+            return
 
-                items.append({
-                    'movie_id': r.get('movie_id'),
-                    'id': r.get('movie_id'),
-                    'title': str(r.get('title') or 'Untitled'),
-                    'poster_path': str(r.get('poster_path') or ''),
-                    'backdrop_path': str(r.get('backdrop_path') or ''),
-                    'genres': genres,
-                    'overview': overview,
-                    'year': str(r.get('year') or '').replace('.0', ''),
-                    'runtime': runtime,
-                    'vote_average': float(r.get('vote_average') or 7.0),
-                    'ai_score': ai_score,
-                    'clusters': get_mood_cluster(", ".join(genres), runtime)
-                })
+        ai_model, ai_columns, ai_vectorizer, ai_encoders = get_or_train_user_model(user)
+        raw_items = get_user_watchlist(user)
+        if not raw_items:
+            self._send_json({'success': False, 'movie': None, 'message': 'Watchlist is empty. Add a few films first!'})
+            return
+
+        # Vectorized batch prediction in RAM
+        scores = [3.8] * len(raw_items)
+        if ai_model:
+            scores = predict_movie_scores_batch(ai_model, ai_columns, ai_vectorizer, ai_encoders, raw_items)
+
+        items = []
+        for i, r in enumerate(raw_items):
+            genres = str(r.get('genres') or '').split(',')
+            genres = [g.strip() for g in genres if g.strip() and g.strip().lower() != 'nan']
+            runtime = int(r.get('runtime') or 0)
+            year = str(r.get('year') or '').replace('.0', '')
+            ai_score = scores[i]
+
+            items.append({
+                'movie_id': r.get('movie_id'),
+                'id': r.get('movie_id'),
+                'title': str(r.get('title') or 'Untitled'),
+                'poster_path': str(r.get('poster_path') or ''),
+                'backdrop_path': str(r.get('backdrop_path') or ''),
+                'genres': genres,
+                'overview': str(r.get('overview') or ''),
+                'year': year,
+                'release_date': year,
+                'runtime': runtime,
+                'vote_average': float(r.get('vote_average') or 7.0),
+                'ai_score': ai_score,
+                'clusters': get_mood_cluster(", ".join(genres), runtime)
+            })
 
         duration = body.get('duration', 'Any')
         mood = body.get('mood', 'Any')
@@ -446,7 +514,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if platform != 'All Platforms':
             matched = []
             for m in candidates:
-                provs = get_watch_providers(m['movie_id'])
+                provs = get_watch_providers(m['movie_id'], tmdb_key=tmdb_key)
                 if any(platform.lower() in p.lower() for p in provs):
                     m['providers'] = provs
                     matched.append(m)
@@ -458,7 +526,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             f"Selected as your #1 match tonight with a {int(winner['ai_score'] * 20)}% personal affinity score. "
             f"At {winner['runtime'] or 'feature'} min, this {', '.join(winner['clusters'][:2])} pick unwinds decision fatigue."
         )
-        winner['providers'] = get_watch_providers(winner['movie_id'])
+        winner['providers'] = get_watch_providers(winner['movie_id'], tmdb_key=tmdb_key)
         self._send_json({'success': True, 'movie': winner, 'message': 'Match found!'})
 
     def _handle_recommend(self, body):
@@ -471,6 +539,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         context = body.get('context', 'Alone')
         streaming = body.get('streaming', 'All Platforms')
         source = body.get('source', 'all')
+        tmdb_key, gemini_key = self._get_request_keys(user=user, body=body)
 
         # Load user watched titles & IDs from Neon DB
         watched_titles = []
@@ -484,13 +553,13 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 pass
 
         ai_model, ai_columns, ai_vectorizer, ai_encoders = get_or_train_user_model(user) if user else (None, None, None, None)
-        ai_analysis = interpret_query_with_ai(prompt)
+        ai_analysis = interpret_query_with_ai(prompt, custom_api_key=gemini_key)
 
         picks = analyze(
             watched_titles, watched_ids, [],
             ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders,
             user_context=context, streaming_filter=streaming, raw_prompt=prompt,
-            source=source, username=user
+            source=source, username=user, tmdb_key=tmdb_key
         )
 
         # Sanitize picks against nan
@@ -520,16 +589,18 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
     def _handle_search_tmdb(self, query):
         q = query.get('q', [''])[0].strip()
-        if not q or not TMDB_KEY:
+        user = self._get_request_user(query)
+        tmdb_key, _ = self._get_request_keys(user=user, query=query)
+        if not q or not tmdb_key:
             self._send_json({'results': []})
             return
 
         try:
             # Multi-tier search: movie search + multi search fallback
-            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': TMDB_KEY, 'query': q}, timeout=6).json()
+            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': tmdb_key, 'query': q}, timeout=6).json()
             raw_results = resp.get('results', []) if isinstance(resp, dict) else []
             if not raw_results:
-                resp2 = http_session.get(f"{TMDB_BASE_URL}/search/multi", params={'api_key': TMDB_KEY, 'query': q}, timeout=6).json()
+                resp2 = http_session.get(f"{TMDB_BASE_URL}/search/multi", params={'api_key': tmdb_key, 'query': q}, timeout=6).json()
                 raw_results = [m for m in resp2.get('results', []) if m.get('media_type') != 'person'] if isinstance(resp2, dict) else []
 
             clean_results = []
@@ -556,6 +627,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
         try:
             user = self._get_request_user(query)
+            tmdb_key, _ = self._get_request_keys(user=user, query=query)
             watched_ids = []
             watched_titles = []
             if user:
@@ -571,7 +643,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 ai_model=ai_model,
                 ai_columns=ai_columns,
                 ai_vectorizer=ai_vectorizer,
-                ai_encoders=ai_encoders
+                ai_encoders=ai_encoders,
+                tmdb_key=tmdb_key
             )
             self._send_json({'movie_id': int(movie_id), 'ripples': ripples})
         except Exception as e:
