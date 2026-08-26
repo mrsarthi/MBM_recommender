@@ -15,6 +15,7 @@ let currentMatchmakerWinner = null;
 let currentWatchlistCluster = 'All';
 let discoverMode = 'search';
 let currentView = 'watchlist';
+let renderedMoviesMap = new Map();
 
 // ── In-Memory Fast Caches (Instant 0ms Tab Switching) ──
 const watchlistCache = new Map();
@@ -378,6 +379,7 @@ function renderGrid(movies) {
         return;
     }
     movies.forEach(m => {
+        renderedMoviesMap.set(m.id, m);
         const card = document.createElement('div');
         card.className = 'poster-card';
         card.onclick = () => openSpotlight(m);
@@ -402,10 +404,10 @@ function renderGrid(movies) {
         card.innerHTML = `
             ${poster ? `<img src="${poster}" alt="${m.title}" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
             <div class="wl-card-actions" onclick="event.stopPropagation()">
-                <button class="wl-act-btn diary-add" title="Rate & Log Film" onclick="openLogForMovieFromCard(${JSON.stringify(m).replace(/"/g, '&quot;')})">
+                <button class="wl-act-btn diary-add" title="Rate & Log Film" onclick="openLogForMovieFromCardId(${m.id})">
                     👁️
                 </button>
-                <button class="wl-act-btn bookmark-add ${isSaved ? 'in-watchlist' : ''}" title="${isSaved ? 'In Watchlist' : 'Add to Watchlist'}" onclick="toggleWatchlistFromCard(${JSON.stringify(m).replace(/"/g, '&quot;')}, this)">
+                <button class="wl-act-btn bookmark-add ${isSaved ? 'in-watchlist' : ''}" title="${isSaved ? 'In Watchlist' : 'Add to Watchlist'}" onclick="toggleWatchlistFromCardId(${m.id}, this)">
                     ${isSaved ? '✓' : '🔖'}
                 </button>
             </div>
@@ -417,6 +419,21 @@ function renderGrid(movies) {
         `;
         grid.appendChild(card);
     });
+}
+
+function openLogForMovieFromCardId(id) {
+    const m = renderedMoviesMap.get(id);
+    if (m) {
+        selectMovieForLog(m);
+        openLogModal();
+    }
+}
+
+async function toggleWatchlistFromCardId(id, btn) {
+    const m = renderedMoviesMap.get(id);
+    if (m) {
+        await toggleWatchlistFromCard(m, btn);
+    }
 }
 
 // ── Watchlist Management ──

@@ -32,6 +32,23 @@ class TestMovieTitleSearch(unittest.TestCase):
             MODEL_PATH, COLUMNS_PATH, VECTORIZER_PATH, ENCODERS_PATH
         )
 
+        # Seed test user and Inception in database
+        from backend.db import get_or_create_user, upsert_user_diary, upsert_movies_batch
+        cls.test_username = 'test_search_user'
+        user = get_or_create_user(cls.test_username)
+        upsert_movies_batch([{
+            'movie_id': 27205,
+            'title': 'Inception',
+            'year': '2010',
+            'genres': 'Action, Science Fiction, Adventure',
+            'overview': 'Cobb is a skilled thief...'
+        }])
+        upsert_user_diary(user['id'], [{
+            'movie_id': 27205,
+            'rating': 4.5,
+            'watched_date': '2026-08-26'
+        }])
+
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
@@ -44,7 +61,10 @@ class TestMovieTitleSearch(unittest.TestCase):
             'context': 'Alone',
             'streaming': 'All Platforms'
         }).encode('utf-8')
-        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+        req = urllib.request.Request(url, data=payload, headers={
+            'Content-Type': 'application/json',
+            'X-Letterboxd-User': self.test_username
+        })
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             return json.loads(resp.read().decode('utf-8'))
