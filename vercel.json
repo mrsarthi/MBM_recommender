@@ -1,13 +1,11 @@
 {
+  "framework": null,
+  "outputDirectory": "frontend",
   "cleanUrls": true,
   "rewrites": [
     {
       "source": "/api/:match*",
       "destination": "https://mbmr.onrender.com/api/:match*"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/frontend/$1"
     }
   ]
 }
