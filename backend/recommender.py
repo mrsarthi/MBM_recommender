@@ -64,9 +64,8 @@ def load_watched_data(profile_path=PROFILE_PATH, memory_path=APP_MEMORY_FILE):
 
 from concurrent.futures import ThreadPoolExecutor
 
-# Words that describe a *mood* rather than name a film. A query built only from these
-# must never promote same-named films to the top: searching "thriller" should return a
-# thriller mood board, not the 1983 short film titled "Thriller".
+# Words that describe a *mood*, concept, or trope rather than name a specific film.
+# A query built from these must never promote same-named obscure films to the top.
 MOOD_TERMS = {
     'action', 'adventure', 'animation', 'animated', 'comedy', 'comedies', 'crime',
     'documentary', 'documentaries', 'drama', 'dramas', 'family', 'fantasy', 'history',
@@ -84,7 +83,33 @@ MOOD_TERMS = {
     'aesthetic', 'aesthetics', 'vibe', 'vibes', 'mood', 'feeling', 'feels',
     'rainy', 'night', 'nighttime', 'summer', 'winter', 'autumn', 'rain', 'neon',
     'retro', 'vintage', 'classic', 'modern', 'futuristic', 'dystopian', 'cyber',
+    'time', 'travel', 'timetravel', 'cyberpunk', 'heist', 'robbery', 'zombie', 'zombies',
+    'vampire', 'vampires', 'werewolf', 'alien', 'aliens', 'apocalypse', 'post-apocalyptic',
+    'dystopia', 'space', 'robot', 'robots', 'ai', 'artificial', 'intelligence',
+    'superhero', 'superheroes', 'detective', 'murder', 'killer', 'serial',
+    'investigation', 'whodunnit', 'slasher', 'haunted', 'ghost', 'paranormal',
+    'possession', 'exorcism', 'demon', 'survival', 'revenge', 'martial', 'arts',
+    'sports', 'racing', 'prison', 'spy', 'espionage', 'conspiracy', 'multiverse',
+    'dimension', 'parallel', 'loop', 'temporal', 'body', 'found', 'footage', 'psychological'
 }
+
+# Cache for TMDB keyword lookups to minimize API overhead (<0.5ms hit)
+_tmdb_keyword_cache = {}
+
+def _get_tmdb_keywords(query_str, api_key):
+    query_clean = str(query_str or '').strip().lower()
+    if not query_clean or not api_key:
+        return []
+    if query_clean in _tmdb_keyword_cache:
+        return _tmdb_keyword_cache[query_clean]
+    try:
+        resp = http_session.get(f"{TMDB_BASE_URL}/search/keyword", params={'api_key': api_key, 'query': query_clean}, timeout=4).json()
+        results = resp.get('results', []) if isinstance(resp, dict) else []
+        kw_ids = [str(k['id']) for k in results[:4] if 'id' in k]
+        _tmdb_keyword_cache[query_clean] = kw_ids
+        return kw_ids
+    except Exception:
+        return []
 
 # Words carrying no signal either way; ignored when classifying.
 _FILLER_TERMS = {
@@ -346,14 +371,19 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                         results.append(rm)
             except Exception: pass
 
-    # 2. Suggested Titles from Gemini (concurrent lookup)
+    # 2. Suggested Titles from Gemini (concurrent lookup with high thematic priority)
     suggested_titles = ai_analysis.get('suggested_titles', [])
     if suggested_titles and active_tmdb:
         def fetch_title(t):
             try:
                 resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': t}, timeout=5).json()
-                m = resp.get('results', []) if isinstance(resp, dict) else []
-                return m[0] if m else None
+                m_list = resp.get('results', []) if isinstance(resp, dict) else []
+                if m_list:
+                    m = m_list[0]
+                    m['thematic_match'] = True
+                    m['thematic_weight'] = 1.15
+                    return m
+                return None
             except Exception: return None
             
         with ThreadPoolExecutor(max_workers=5) as executor:
@@ -362,9 +392,45 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                     seen_ids.add(res.get('id'))
                     results.append(res)
 
-    # 3. Search Query / Theme from Gemini
-    search_query = ai_analysis.get('search_query', '')
-    if search_query and search_query != clean_raw and active_tmdb:
+    # 3. TMDB Keyword-Constrained Thematic Discovery
+    search_query = (ai_analysis.get('search_query') or clean_raw or '').strip()
+    kw_ids = []
+    if search_query and active_tmdb:
+        kw_ids = _get_tmdb_keywords(search_query, active_tmdb)
+        if not kw_ids and clean_raw and clean_raw != search_query:
+            kw_ids = _get_tmdb_keywords(clean_raw, active_tmdb)
+
+    if kw_ids and active_tmdb:
+        def fetch_kw_discover_page(page):
+            try:
+                params = {
+                    'api_key': active_tmdb,
+                    'with_keywords': "|".join(kw_ids),
+                    'vote_count.gte': 40,
+                    'vote_average.gte': 5.8,
+                    'sort_by': 'popularity.desc',
+                    'language': 'en-US',
+                    'page': page
+                }
+                resp = http_session.get(f"{TMDB_BASE_URL}/discover/movie", params=params, timeout=6)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get('results', []) if isinstance(data, dict) else []
+                return []
+            except Exception:
+                return []
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            for page_results in executor.map(fetch_kw_discover_page, (1, 2, 3)):
+                for m in page_results:
+                    if m.get('id') and m.get('id') not in seen_ids:
+                        seen_ids.add(m.get('id'))
+                        m['thematic_match'] = True
+                        m['thematic_weight'] = 1.10
+                        results.append(m)
+
+    # 4. Search Query / Theme Fallback
+    if search_query and search_query != clean_raw and active_tmdb and len(results) < 20:
         try:
             resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': search_query}, timeout=6).json()
             matches = resp.get('results', []) if isinstance(resp, dict) else []
@@ -374,9 +440,9 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                     results.append(m)
         except Exception: pass
 
-    # 4. Discover by Genres
+    # 5. Discover by Genres (Fallback when thematic keyword pool is small)
     desiredGenres = ai_analysis.get('genres', [])
-    if desiredGenres and active_tmdb:
+    if desiredGenres and active_tmdb and len(results) < 25:
         targetGenreIds = [str(genreDict[name]) for name in desiredGenres if name in genreDict]
         if targetGenreIds:
             genreIdString = "|".join(targetGenreIds)
@@ -386,9 +452,6 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                 'vote_average.gte': 6.2, 'vote_count.gte': 300, 
                 'sort_by': 'popularity.desc', 'language': 'en-US', 'page': 1
             }
-            # Pull a few pages so the personal model has a real pool to rank: one page of
-            # popularity.desc is dominated by whatever released this month. Fetched in
-            # parallel to keep the endpoint responsive on a small Render instance.
             def fetch_discover_page(page):
                 try:
                     params = dict(discoverParams, page=page)
@@ -401,7 +464,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                     return []
 
             with ThreadPoolExecutor(max_workers=3) as executor:
-                for page_results in executor.map(fetch_discover_page, (1, 2, 3)):
+                for page_results in executor.map(fetch_discover_page, (1, 2)):
                     for m in page_results:
                         if m.get('id') and m.get('id') not in seen_ids:
                             seen_ids.add(m.get('id'))
@@ -420,7 +483,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     # If specific streaming platform filter is set, query concurrently
     if streaming_filter != "All Platforms" and all_candidates:
         def check_stream(m):
-            provs = get_watch_providers(m.get('id'))
+            provs = get_watch_providers(m.get('id'), tmdb_key=active_tmdb)
             m['providers'] = provs
             return m if any(streaming_filter.lower() in p.lower() for p in provs) else None
             
@@ -432,20 +495,23 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
         genres = [idToGenre[g] for g in movie.get('genre_ids', []) if g in idToGenre]
         overview = movie.get('overview', '')
         title_norm = titleNormalize(movie.get('title', ''))
+        thematic_weight = movie.get('thematic_weight', 1.0)
         
         if ai_model:
-            score = predict_movie_score(
+            raw_score = predict_movie_score(
                 ai_model, ai_columns, ai_vectorizer, ai_encoders,
                 genres=genres, context=user_context, overview=overview,
                 runtime=movie.get('runtime')
             )
             for hated in hated_movies:
                 if (hated in title_norm) or (title_norm in hated):
-                    score = max(0.5, score - 2.5)
+                    raw_score = max(0.5, raw_score - 2.5)
                     break
+            # Apply slight thematic boost if film was specifically matched to the keyword/theme
+            score = round(min(5.0, raw_score * thematic_weight), 2)
             movie['ai_score'] = score
         else:
-            movie['ai_score'] = 3.5
+            movie['ai_score'] = round(min(5.0, 3.5 * thematic_weight), 2)
             
         finalPicks.append(movie)
 
