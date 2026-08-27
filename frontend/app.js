@@ -303,11 +303,14 @@ async function generateRecommendations() {
         });
         const data = await res.json();
         currentPicks = data.candidates || [];
-        renderGrid(currentPicks);
+        visiblePicksCount = 21;
+        renderGrid(currentPicks, visiblePicksCount);
     } catch(e) { 
         console.error('Rec error', e); 
         const grid = document.getElementById('films-grid');
         grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:var(--text3);">Failed to load recommendations. Please try again.</div>';
+        const loadMoreContainer = document.getElementById('discover-load-more-container');
+        if (loadMoreContainer) loadMoreContainer.style.display = 'none';
     } finally {
         btn.disabled = false;
         btn.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>`;
@@ -341,6 +344,8 @@ function setDiscoverMode(mode) {
     
     const grid = document.getElementById('films-grid');
     if (grid) grid.innerHTML = '';
+    const loadMoreContainer = document.getElementById('discover-load-more-container');
+    if (loadMoreContainer) loadMoreContainer.style.display = 'none';
 }
 
 async function executeDirectMovieSearch() {
@@ -390,25 +395,36 @@ async function executeDirectMovieSearch() {
         });
         
         currentPicks = mapped;
-        renderGrid(mapped);
+        visiblePicksCount = 21;
+        renderGrid(mapped, visiblePicksCount);
     } catch(e) {
         console.error('Search error', e);
         const grid = document.getElementById('films-grid');
         if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:var(--text3);">Search failed. Please try again.</div>';
+        const loadMoreContainer = document.getElementById('discover-load-more-container');
+        if (loadMoreContainer) loadMoreContainer.style.display = 'none';
     } finally {
         btn.disabled = false;
         btn.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="19" y2="19"/></svg>`;
     }
 }
 
-function renderGrid(movies) {
+let visiblePicksCount = 21;
+
+function renderGrid(movies, limit = 21) {
     const grid = document.getElementById('films-grid');
+    const loadMoreContainer = document.getElementById('discover-load-more-container');
+    const remainingBadge = document.getElementById('discover-remaining-badge');
+    
     grid.innerHTML = '';
-    if (!movies.length) {
+    if (!movies || !movies.length) {
         grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:var(--text3);">No unwatched films found. Try a different mood.</div>';
+        if (loadMoreContainer) loadMoreContainer.style.display = 'none';
         return;
     }
-    movies.forEach(m => {
+    
+    const itemsToRender = movies.slice(0, limit);
+    itemsToRender.forEach(m => {
         renderedMoviesMap.set(m.id, m);
         const card = document.createElement('div');
         card.className = 'poster-card';
@@ -449,6 +465,23 @@ function renderGrid(movies) {
         `;
         grid.appendChild(card);
     });
+
+    if (loadMoreContainer) {
+        if (movies.length > limit) {
+            loadMoreContainer.style.display = 'flex';
+            if (remainingBadge) {
+                const remaining = movies.length - limit;
+                remainingBadge.textContent = `+${remaining} more`;
+            }
+        } else {
+            loadMoreContainer.style.display = 'none';
+        }
+    }
+}
+
+function loadMoreDiscoverMovies() {
+    visiblePicksCount += 21;
+    renderGrid(currentPicks, visiblePicksCount);
 }
 
 function openLogForMovieFromCardId(id) {
