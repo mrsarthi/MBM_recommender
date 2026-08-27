@@ -1,0 +1,9 @@
+{
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/api/:match*",
+      "destination": "https://mbmr.onrender.com/api/:match*"
+    }
+  ]
+}
