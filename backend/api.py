@@ -672,10 +672,12 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             'year': str(body.get('year', '')).replace('.0', '')
         }])
 
+        watched_date = str(body.get('watched_date') or body.get('date') or pd.Timestamp.now().strftime('%Y-%m-%d')).strip()[:10]
+
         upsert_user_diary(user_rec['id'], [{
             'movie_id': movie_id,
             'rating': rating,
-            'watched_date': pd.Timestamp.now().strftime('%Y-%m-%d')
+            'watched_date': watched_date
         }])
 
         # Auto-remove from watchlist if it was there

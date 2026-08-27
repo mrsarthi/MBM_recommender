@@ -364,6 +364,18 @@
                         </div>
                     </div>
                 </div>
+                <div class="log-field-group">
+                    <div class="log-field-head">
+                        <label class="log-field-label" for="log-watched-date">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2px; margin-right: 4px; color: var(--accent);"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                            Watched Date
+                        </label>
+                        <button type="button" class="log-today-btn" onclick="setLogDateToday()">Today</button>
+                    </div>
+                    <div class="log-date-input-wrap">
+                        <input id="log-watched-date" type="date" class="log-date-input">
+                    </div>
+                </div>
                 <div id="compare-verdict-card" class="compare-card">
                     <div class="cmp-row"><span>AI Prediction:</span><strong id="modal-ai-pred">★ 4.2</strong></div>
                     <div class="cmp-row"><span>Your Rating:</span><strong id="modal-user-rate" class="gold">★ 4.5</strong></div>

@@ -171,7 +171,9 @@ async function loadStatus() {
     }
 
     try {
-        const d = await (await mbmrFetch(`${API}/api/status`)).json();
+        const localUser = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+        const userParam = localUser ? `?user=${encodeURIComponent(localUser)}&_t=${Date.now()}` : `?_t=${Date.now()}`;
+        const d = await (await mbmrFetch(`${API}/api/status${userParam}`)).json();
         if (wakeTimer) clearTimeout(wakeTimer);
         const b = document.getElementById('render-wake-banner');
         if (b) b.style.display = 'none';
@@ -180,7 +182,6 @@ async function loadStatus() {
         document.getElementById('journal-total-count').textContent = d.total_films || 0;
         document.getElementById('journal-avg-rating').textContent = d.avg_rating ? `${d.avg_rating}★` : '—';
         
-        const localUser = await MBMRStorage.get('letterboxd_username');
         const activeUser = localUser || d.username || 'guest';
         document.getElementById('profile-user').textContent = `@${activeUser}`;
         const userInput = document.getElementById('sync-user-input');
@@ -194,9 +195,11 @@ async function loadStatus() {
 
 async function loadWatchlistIds() {
     try {
-        const d = await (await mbmrFetch(`${API}/api/watchlist`)).json();
+        const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+        const userParam = username ? `?user=${encodeURIComponent(username)}&_t=${Date.now()}` : `?_t=${Date.now()}`;
+        const d = await (await mbmrFetch(`${API}/api/watchlist${userParam}`)).json();
         watchlistIds = new Set((d.watchlist || []).map(m => m.id || m.movie_id));
-        updateWatchlistBadge(watchlistIds.size);
+        updateWatchlistBadge(d.total !== undefined ? d.total : watchlistIds.size);
     } catch(e) {}
 }
 
@@ -538,8 +541,10 @@ function renderWatchlistSkeleton(count = 6) {
 async function fetchWatchlist() {
     const stream = document.getElementById('wl-stream-select')?.value || 'All Platforms';
     const sort = document.getElementById('wl-sort-select')?.value || 'Highest Predicted ★';
-    const cacheKey = `${currentWatchlistCluster}_${sort}_${stream}`;
-    const url = `${API}/api/watchlist?cluster=${encodeURIComponent(currentWatchlistCluster)}&sort=${encodeURIComponent(sort)}&platform=${encodeURIComponent(stream)}`;
+    const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+    const cacheKey = `${username}_${currentWatchlistCluster}_${sort}_${stream}`;
+    const userParam = username ? `&user=${encodeURIComponent(username)}` : '';
+    const url = `${API}/api/watchlist?cluster=${encodeURIComponent(currentWatchlistCluster)}&sort=${encodeURIComponent(sort)}&platform=${encodeURIComponent(stream)}${userParam}&_t=${Date.now()}`;
     const dock = document.getElementById('dock-label');
 
     // 1. Instant Cache Hit (0ms render)
@@ -1099,8 +1104,23 @@ function showToast(message, glyph = '✓') {
 }
 
 // ── Log Modal ──
+function setLogDateToday() {
+    const dateInput = document.getElementById('log-watched-date');
+    if (dateInput) {
+        const now = new Date();
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        dateInput.value = `${y}-${m}-${d}`;
+    }
+}
+
 function openLogModal() { 
     document.getElementById('log-modal').classList.add('open'); 
+    const dateInput = document.getElementById('log-watched-date');
+    if (dateInput && !dateInput.value) {
+        setLogDateToday();
+    }
     const searchInput = document.getElementById('log-search-input');
     if (searchInput) {
         if (!selectedLogMovie) {
@@ -1120,6 +1140,7 @@ function openLogForCurrentSpotlight() {
     if (!currentSpotlight) return;
     selectMovieForLog(currentSpotlight);
     updateSliderLabel(4.5);
+    setLogDateToday();
     openLogModal();
 }
 
@@ -1151,6 +1172,7 @@ function selectMovieForLog(m) {
     if (predEl) predEl.textContent = `★ ${(m.ai_score || 3.8).toFixed(1)}`;
     const slider = document.getElementById('rating-slider');
     if (slider) updateSliderLabel(slider.value);
+    setLogDateToday();
 }
 
 async function searchTMDBLog(q) {
@@ -1206,6 +1228,8 @@ async function submitLogMovie() {
     const slider = document.getElementById('rating-slider');
     const ratingVal = slider ? parseFloat(slider.value) : 4.0;
     const contextVal = document.getElementById('context-select')?.value || 'Alone';
+    const dateInput = document.getElementById('log-watched-date');
+    const watchedDateVal = (dateInput && dateInput.value) ? dateInput.value : new Date().toISOString().split('T')[0];
     const genresVal = Array.isArray(selectedLogMovie.genres) 
         ? selectedLogMovie.genres.join(', ') 
         : (selectedLogMovie.genres || '');
@@ -1220,6 +1244,7 @@ async function submitLogMovie() {
                 title: selectedLogMovie.title || 'Untitled', 
                 rating: ratingVal, 
                 context: contextVal, 
+                watched_date: watchedDateVal,
                 genres: genresVal,
                 year: yearVal,
                 poster_path: selectedLogMovie.poster_path || '',
@@ -1273,6 +1298,7 @@ function resetLogModalPreview() {
         slider.value = 4.5;
         updateSliderLabel(4.5);
     }
+    setLogDateToday();
 }
 
 // ── Sync Modal ──

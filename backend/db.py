@@ -12,9 +12,9 @@ from backend.config import DATABASE_URL
 _pool = None
 _pool_lock = __import__('threading').Lock()
 
-# Fast in-memory query cache for instantaneous UI responses (< 0.1ms)
+# Fast in-memory query cache for rapid UI responses (< 0.1ms) with 15s freshness TTL
 _query_cache = {}
-_CACHE_TTL = 86400.0
+_CACHE_TTL = 15.0
 
 def _get_cache(key):
     entry = _query_cache.get(key)
@@ -548,14 +548,20 @@ def upsert_user_watchlist(user_id: int, watchlist_entries):
     
     deduped = {}
     for w in watchlist_entries:
-        m_id = w.get('movie_id') or w.get('id')
-        if not m_id:
+        if isinstance(w, (int, str)) and str(w).isdigit():
+            m_id = int(w)
+            date = pd.Timestamp.now().strftime('%Y-%m-%d')
+        elif isinstance(w, dict):
+            m_id = w.get('movie_id') or w.get('id')
+            if not m_id:
+                continue
+            try:
+                m_id = int(float(m_id))
+            except:
+                continue
+            date = str(w.get('added_date') or pd.Timestamp.now().strftime('%Y-%m-%d'))[:30]
+        else:
             continue
-        try:
-            m_id = int(float(m_id))
-        except:
-            continue
-        date = str(w.get('added_date') or pd.Timestamp.now().strftime('%Y-%m-%d'))[:30]
         deduped[m_id] = (user_id, m_id, date)
 
     records = list(deduped.values())
