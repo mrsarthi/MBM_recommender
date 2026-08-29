@@ -5,12 +5,13 @@ import pandas as pd
 from backend.db import (
     init_db, get_or_create_user, verify_user_pin,
     upsert_movies_batch, get_existing_movie_ids,
-    upsert_user_diary, get_user_diary,
+    upsert_user_diary, get_user_diary, get_user_diary_map,
     upsert_user_watchlist, get_user_watchlist,
-    remove_from_user_watchlist, add_to_user_watchlist
+    remove_from_user_watchlist, add_to_user_watchlist,
+    cleanup_database_duplicates
 )
 from backend.in_memory_model import train_user_model_in_memory, get_or_train_user_model
-from backend.jobs import start_onboarding_job, get_job_status
+from backend.jobs import start_onboarding_job, start_watchlist_sync_job, start_diary_sync_job, get_job_status
 from backend.recommender import analyze, titleNormalize
 
 import threading
@@ -372,6 +373,164 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
         self.assertEqual(len(entries), 70)
         self.assertEqual(entries[0]['slug'], 'movie-0')
         self.assertEqual(entries[69]['slug'], 'movie-69')
+
+    def test_11_cleanup_database_duplicates(self):
+        """Test database deduplication: placeholder resolution migration & removing logged movies from watchlist."""
+        test_user = f"test_dedup_{int(time.time() * 1000)}"
+        user = get_or_create_user(test_user)
+        uid = user['id']
+
+        # 1. Insert a placeholder movie
+        upsert_movies_batch([{
+            'movie_id': 950000001,
+            'title': 'Placeholder Test Film',
+            'letterboxd_slug': 'placeholder-test-film',
+            'genres': 'Drama'
+        }])
+        upsert_user_diary(uid, [{'movie_id': 950000001, 'rating': 4.0, 'watched_date': '2026-01-01'}])
+        upsert_user_watchlist(uid, [{'movie_id': 950000001, 'added_date': '2026-01-01'}])
+
+        # 2. Insert real TMDB movie with the same letterboxd_slug
+        upsert_movies_batch([{
+            'movie_id': 88888,
+            'title': 'Placeholder Test Film',
+            'letterboxd_slug': 'placeholder-test-film',
+            'genres': 'Drama',
+            'poster_path': '/real_poster.jpg'
+        }])
+
+        # Run deduplication
+        cleanup_database_duplicates(uid)
+
+        # Diary should now point to real_id (88888) and placeholder should be cleaned
+        diary_rows, _, _ = get_user_diary(test_user)
+        mids = [r['movie_id'] for r in diary_rows]
+        self.assertIn(88888, mids)
+        self.assertNotIn(950000001, mids)
+
+        # Watchlist should have had 88888 removed because it is in diary
+        wl = get_user_watchlist(test_user)
+        wl_mids = [w['movie_id'] for w in wl]
+        self.assertNotIn(88888, wl_mids)
+
+    def test_12_isolated_watchlist_sync_job(self):
+        """Test that start_watchlist_sync_job only syncs watchlist and doesn't touch diary or retrain AI."""
+        from unittest.mock import patch
+
+        test_user = f"test_wl_sync_{int(time.time() * 1000)}"
+        user = get_or_create_user(test_user)
+        uid = user['id']
+
+        # Mock Letterboxd watchlist scrape
+        mock_entries = [
+            {'slug': 'oppenheimer-2023', 'title': 'Oppenheimer', 'year_hint': '2023'},
+            {'slug': 'barbie-2023', 'title': 'Barbie', 'year_hint': '2023'}
+        ]
+
+        with patch('backend.jobs.scrape_letterboxd_watchlist', return_value=mock_entries):
+            with patch('backend.jobs.resolve_entries') as mock_resolve:
+                mock_resolve.return_value = (
+                    [
+                        {'movie_id': 872585, 'title': 'Oppenheimer', 'letterboxd_slug': 'oppenheimer-2023', 'poster_path': '/opp.jpg'},
+                        {'movie_id': 346698, 'title': 'Barbie', 'letterboxd_slug': 'barbie-2023', 'poster_path': '/barb.jpg'}
+                    ],
+                    {'oppenheimer-2023': 872585, 'barbie-2023': 346698}
+                )
+                with patch('backend.jobs.train_user_model_in_memory') as mock_train:
+                    job_id = start_watchlist_sync_job(test_user)
+                    
+                    for _ in range(60):
+                        st = get_job_status(job_id)
+                        if st.get('status') in ('completed', 'failed'):
+                            break
+                        time.sleep(0.25)
+
+                    self.assertEqual(st.get('status'), 'completed', f"Watchlist sync job failed or timed out: {st}")
+                    # Verify AI training was NOT called
+                    mock_train.assert_not_called()
+
+        # Check that watchlist now contains the movies
+        wl = get_user_watchlist(test_user)
+        wl_titles = [w['title'] for w in wl]
+        self.assertIn('Oppenheimer', wl_titles)
+        self.assertIn('Barbie', wl_titles)
+
+    def test_13_isolated_incremental_diary_sync_job(self):
+        """Test that start_diary_sync_job only syncs new entries and stops early without touching watchlist."""
+        from unittest.mock import patch, Mock
+
+        test_user = f"test_diary_sync_{int(time.time() * 1000)}"
+        user = get_or_create_user(test_user)
+        uid = user['id']
+
+        # Pre-seed diary with one movie
+        upsert_movies_batch([{
+            'movie_id': 157336, 'title': 'Interstellar', 'letterboxd_slug': 'interstellar',
+            'genres': 'Sci-Fi', 'poster_path': '/inter.jpg'
+        }])
+        upsert_user_diary(uid, [{'movie_id': 157336, 'rating': 5.0, 'watched_date': '2026-01-01'}])
+
+        # Mock page scrape returning 1 new movie and 1 already-known movie
+        mock_resp = Mock()
+        mock_resp.status_code = 200
+        mock_resp.text = """
+        <tr class="diary-entry-row">data-item-slug="dune-part-two" data-item-name="Dune: Part Two (2024)" rated-10 /for/2026/02/01/</tr>
+        <tr class="diary-entry-row">data-item-slug="interstellar" data-item-name="Interstellar (2014)" rated-10 /for/2026/01/01/</tr>
+        """
+
+        mock_session = Mock()
+        mock_session.get.return_value = mock_resp
+
+        with patch('backend.jobs.get_scrape_session', return_value=mock_session):
+            with patch('backend.jobs.resolve_entries') as mock_resolve:
+                mock_resolve.return_value = (
+                    [{'movie_id': 693134, 'title': 'Dune: Part Two', 'letterboxd_slug': 'dune-part-two', 'poster_path': '/dune2.jpg'}],
+                    {'dune-part-two': 693134}
+                )
+                with patch('backend.jobs.train_user_model_in_memory') as mock_train:
+                    job_id = start_diary_sync_job(test_user)
+
+                    for _ in range(60):
+                        st = get_job_status(job_id)
+                        if st.get('status') in ('completed', 'failed'):
+                            break
+                        time.sleep(0.25)
+
+                    self.assertEqual(st.get('status'), 'completed', f"Diary sync job failed or timed out: {st}")
+                    # resolve_entries should only have been called for Dune (not Interstellar)
+                    self.assertIsNotNone(mock_resolve.call_args, f"resolve_entries was not called; job status: {st}")
+                    call_args = mock_resolve.call_args[0][0]
+                    self.assertEqual(len(call_args), 1)
+                    self.assertEqual(call_args[0]['slug'], 'dune-part-two')
+                    # AI training should NOT have been called
+                    mock_train.assert_not_called()
+
+        diary_rows, _, _ = get_user_diary(test_user)
+        d_titles = [r['title'] for r in diary_rows]
+        self.assertIn('Dune: Part Two', d_titles)
+        self.assertIn('Interstellar', d_titles)
+
+    def test_14_isolated_ai_retrain_endpoint(self):
+        """Test that /api/retrain only retrains the model and does not trigger scrapers."""
+        test_user = f"test_retrain_{int(time.time() * 1000)}"
+        user = get_or_create_user(test_user)
+        uid = user['id']
+
+        # Seed 6 movies so training succeeds
+        movies = []
+        diary = []
+        for i in range(6):
+            mid = 80000 + i
+            movies.append({'movie_id': mid, 'title': f'Retrain Movie {i}', 'genres': 'Action, Sci-Fi', 'overview': 'Sci fi action explosion.'})
+            diary.append({'movie_id': mid, 'rating': 4.0 + (i % 2) * 0.5, 'watched_date': '2026-01-01'})
+        upsert_movies_batch(movies)
+        upsert_user_diary(uid, diary)
+
+        resp = requests.post(f"{API_URL}/api/retrain", json={'username': test_user})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data.get('success'))
+        self.assertIn("recalibrated", data.get('message', ''))
 
 if __name__ == '__main__':
     unittest.main()

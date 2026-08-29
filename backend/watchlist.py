@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from backend.config import WATCHLIST_PATH, TMDB_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, get_user_watchlist_path
 from backend.predictions import predict_movie_score, get_watch_providers, load_ai
 from backend.recommender import titleNormalize, load_watched_data, http_session
+from backend.gemini_client import generate_matchmaker_pitch
 
 def get_mood_cluster(genres_str, runtime_mins=0):
     g_lower = str(genres_str).lower()
@@ -159,7 +160,7 @@ def remove_from_watchlist(movie_id, watchlist_path=None, username=None):
     except Exception as e:
         return False, str(e)
 
-def pick_movie_for_tonight(params, ai_model=None, ai_cols=None, ai_vec=None, ai_enc=None, watchlist_path=None, username=None):
+def pick_movie_for_tonight(params, ai_model=None, ai_cols=None, ai_vec=None, ai_enc=None, watchlist_path=None, username=None, gemini_key=None, user_taste=None):
     items = load_watchlist(watchlist_path=watchlist_path, username=username, ai_model=ai_model, ai_cols=ai_cols, ai_vec=ai_vec, ai_enc=ai_enc)
     if not items:
         return None, "Your watchlist is currently empty. Add a few films first!"
@@ -201,12 +202,13 @@ def pick_movie_for_tonight(params, ai_model=None, ai_cols=None, ai_vec=None, ai_
 
     winner = candidates[0]
     
-    # Generate intelligent personalized pitch
-    cluster_str = ", ".join(winner['clusters'][:2])
-    runtime_str = f"{winner['runtime']} min" if winner['runtime'] else "Feature film"
-    pitch = (
-        f"Selected as your #1 match tonight with a {int(winner['ai_score'] * 20)}% personal affinity score. "
-        f"At {runtime_str}, this {cluster_str} pick aligns with your rating history and unwinds decision fatigue."
+    # Generate intelligent personalized pitch via Gemini AI
+    pitch = generate_matchmaker_pitch(
+        winner,
+        user_taste=user_taste,
+        duration_pref=duration,
+        mood_pref=mood,
+        custom_api_key=gemini_key
     )
 
     winner['pitch'] = pitch

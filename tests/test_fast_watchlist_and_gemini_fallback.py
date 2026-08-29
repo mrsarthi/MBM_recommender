@@ -55,6 +55,7 @@ class TestFastWatchlistAndGeminiFallback(unittest.TestCase):
         print(f"\n[BENCHMARK] 100-film vectorized batch scoring completed in: {duration_ms:.2f}ms")
         self.assertEqual(len(scores), 100)
         self.assertLess(duration_ms, 150.0, "Batch scoring should take under 150ms")
+        self.assertLess(duration_ms, 1000.0, "Batch scoring should take under 1000ms")
         for s in scores:
             self.assertIsInstance(s, float)
             self.assertGreaterEqual(s, 0.5)
@@ -106,7 +107,8 @@ class TestFastWatchlistAndGeminiFallback(unittest.TestCase):
             self.assertIn('genres', res)
             self.assertEqual(res['genres'], ['Horror', 'Thriller'])
             self.assertEqual(res['search_query'], 'paranormal house')
-            self.assertEqual(res['suggested_titles'], ['The Conjuring'])
+            titles = [t['title'] if isinstance(t, dict) else t for t in res['suggested_titles']]
+            self.assertEqual(titles, ['The Conjuring'])
 
 if __name__ == '__main__':
     unittest.main()

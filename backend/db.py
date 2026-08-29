@@ -1,12 +1,46 @@
 import os
+import re
 import hashlib
 import json
 import time
+import base64
+import secrets
+from cryptography.fernet import Fernet
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, execute_values
 import pandas as pd
 from backend.config import DATABASE_URL
+
+def get_encryption_fernet():
+    key = os.getenv('ENCRYPTION_KEY')
+    if not key:
+        db_url = os.getenv('DATABASE_URL', 'default_mbmr_secret_salt_12984')
+        derived = hashlib.pbkdf2_hmac('sha256', db_url.encode('utf-8'), b'mbmr_encryption_salt', 100000)
+        key = base64.urlsafe_b64encode(derived).decode('utf-8')
+    return Fernet(key.encode('utf-8'))
+
+def encrypt_key(val: str) -> str:
+    if not val:
+        return ""
+    try:
+        f = get_encryption_fernet()
+        return f.encrypt(val.strip().encode('utf-8')).decode('utf-8')
+    except Exception as e:
+        print(f"[WARN] Key encryption failed: {e}")
+        return val
+
+def decrypt_key(val: str) -> str:
+    if not val:
+        return ""
+    if not val.startswith('gAAAAA'):
+        return val
+    try:
+        f = get_encryption_fernet()
+        return f.decrypt(val.encode('utf-8')).decode('utf-8')
+    except Exception as e:
+        print(f"[WARN] Key decryption failed: {e}")
+        return ""
 
 # Threaded connection pool
 _pool = None
@@ -140,7 +174,103 @@ def stable_movie_id(seed: str) -> int:
 def hash_pin(pin: str) -> str:
     if not pin:
         return ""
-    return hashlib.sha256(f"mbmr_salt_{pin.strip()}".encode('utf-8')).hexdigest()
+    salt = secrets.token_bytes(16)
+    iterations = 100000
+    h = hashlib.pbkdf2_hmac('sha256', pin.strip().encode('utf-8'), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${h.hex()}"
+
+def verify_pin(pin: str, stored_hash: str) -> bool:
+    if not pin or not stored_hash:
+        return False
+    if not stored_hash.startswith("pbkdf2_sha256$"):
+        legacy_hash = hashlib.sha256(f"mbmr_salt_{pin.strip()}".encode('utf-8')).hexdigest()
+        return legacy_hash == stored_hash
+    try:
+        parts = stored_hash.split('$')
+        if len(parts) != 4:
+            return False
+        _, iterations_str, salt_hex, hash_hex = parts
+        iterations = int(iterations_str)
+        salt = bytes.fromhex(salt_hex)
+        expected_hash = bytes.fromhex(hash_hex)
+        computed_hash = hashlib.pbkdf2_hmac('sha256', pin.strip().encode('utf-8'), salt, iterations)
+        return secrets.compare_digest(computed_hash, expected_hash)
+    except Exception:
+        return False
+
+def cleanup_database_duplicates(user_id: int = None):
+    """
+    Cleans up duplicate records across movies, user_diary, and user_watchlist:
+    1. If placeholder movies (movie_id >= 900000000) have a matching real TMDB movie with the same letterboxd_slug,
+       migrate user_diary and user_watchlist foreign keys to the real movie_id and delete the placeholder.
+    2. Removes any movies from user_watchlist that already exist in user_diary for the same user.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # 1. Find placeholder movies that match a real TMDB movie on letterboxd_slug or (title + year)
+            cur.execute("""
+                SELECT p.movie_id AS placeholder_id, r.movie_id AS real_id
+                FROM movies p
+                JOIN movies r ON (
+                    (p.letterboxd_slug = r.letterboxd_slug AND p.letterboxd_slug IS NOT NULL AND p.letterboxd_slug != '')
+                    OR (LOWER(p.title) = LOWER(r.title) AND (p.year = r.year OR p.year = '' OR r.year = ''))
+                )
+                WHERE p.movie_id >= 900000000 AND r.movie_id < 900000000
+            """)
+            replacements = cur.fetchall()
+            for ph_id, real_id in replacements:
+                # Update user_diary references safely
+                cur.execute("""
+                    UPDATE user_diary SET movie_id = %s
+                    WHERE movie_id = %s
+                    AND NOT EXISTS (
+                        SELECT 1 FROM user_diary d2 WHERE d2.user_id = user_diary.user_id AND d2.movie_id = %s
+                    )
+                """, (real_id, ph_id, real_id))
+                cur.execute("DELETE FROM user_diary WHERE movie_id = %s", (ph_id,))
+
+                # Update user_watchlist references safely
+                cur.execute("""
+                    UPDATE user_watchlist SET movie_id = %s
+                    WHERE movie_id = %s
+                    AND NOT EXISTS (
+                        SELECT 1 FROM user_watchlist w2 WHERE w2.user_id = user_watchlist.user_id AND w2.movie_id = %s
+                    )
+                """, (real_id, ph_id, real_id))
+                cur.execute("DELETE FROM user_watchlist WHERE movie_id = %s", (ph_id,))
+
+                # Delete the redundant placeholder movie row
+                cur.execute("DELETE FROM movies WHERE movie_id = %s", (ph_id,))
+
+            # 2. Remove watchlist items that are already logged in diary for the same user
+            if user_id:
+                cur.execute("""
+                    DELETE FROM user_watchlist w
+                    WHERE w.user_id = %s
+                    AND EXISTS (
+                        SELECT 1 FROM user_diary d WHERE d.user_id = w.user_id AND d.movie_id = w.movie_id
+                    )
+                """, (user_id,))
+            else:
+                cur.execute("""
+                    DELETE FROM user_watchlist w
+                    WHERE EXISTS (
+                        SELECT 1 FROM user_diary d WHERE d.user_id = w.user_id AND d.movie_id = w.movie_id
+                    )
+                """)
+
+            conn.commit()
+            if user_id:
+                invalidate_user_cache(user_id)
+            else:
+                invalidate_user_cache()
+    except Exception as e:
+        print(f"[WARN] cleanup_database_duplicates: {e}")
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        release_connection(conn)
 
 def init_db():
     """Initializes the Neon PostgreSQL database schema."""
@@ -220,9 +350,14 @@ def get_user(username: str):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE username = %s", (clean_user,))
+            cur.execute("SELECT id, username, pin_hash, tmdb_key, gemini_key FROM users WHERE username = %s", (clean_user,))
             row = cur.fetchone()
-            return dict(row) if row else None
+            if row:
+                d = dict(row)
+                d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
+                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
+                return d
+            return None
     finally:
         release_connection(conn)
 
@@ -235,7 +370,7 @@ def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None, gem
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE username = %s", (clean_user,))
+            cur.execute("SELECT id, username, pin_hash, tmdb_key, gemini_key FROM users WHERE username = %s", (clean_user,))
             user = cur.fetchone()
             if user:
                 # Update keys or PIN if provided
@@ -246,29 +381,37 @@ def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None, gem
                     params.append(hash_pin(pin))
                 if tmdb_key:
                     updates.append("tmdb_key = %s")
-                    params.append(tmdb_key.strip())
+                    params.append(encrypt_key(tmdb_key))
                 if gemini_key:
                     updates.append("gemini_key = %s")
-                    params.append(gemini_key.strip())
+                    params.append(encrypt_key(gemini_key))
                 
                 if updates:
                     updates.append("updated_at = NOW()")
                     params.append(clean_user)
-                    cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE username = %s RETURNING *", params)
+                    cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE username = %s RETURNING id, username, pin_hash, tmdb_key, gemini_key", params)
                     updated = cur.fetchone()
                     conn.commit()
                     if updated:
                         user = updated
-                return dict(user)
+                d = dict(user)
+                d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
+                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
+                return d
             else:
                 pin_h = hash_pin(pin) if pin else ""
+                tmdb_enc = encrypt_key(tmdb_key) if tmdb_key else ""
+                gemini_enc = encrypt_key(gemini_key) if gemini_key else ""
                 cur.execute("""
                     INSERT INTO users (username, pin_hash, tmdb_key, gemini_key)
                     VALUES (%s, %s, %s, %s)
-                    RETURNING *
-                """, (clean_user, pin_h, (tmdb_key or '').strip(), (gemini_key or '').strip()))
+                    RETURNING id, username, pin_hash, tmdb_key, gemini_key
+                """, (clean_user, pin_h, tmdb_enc, gemini_enc))
                 conn.commit()
-                return dict(cur.fetchone())
+                d = dict(cur.fetchone())
+                d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
+                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
+                return d
     finally:
         release_connection(conn)
 
@@ -277,15 +420,29 @@ def verify_user_pin(username: str, pin: str):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE username = %s", (clean_user,))
+            cur.execute("SELECT id, username, pin_hash, tmdb_key, gemini_key FROM users WHERE username = %s", (clean_user,))
             user = cur.fetchone()
             if not user:
                 return False, "User not found", None
             if not user.get('pin_hash'):
                 # User has no PIN set yet
-                return True, "No PIN set", dict(user)
-            if user.get('pin_hash') == hash_pin(pin):
-                return True, "Authenticated", dict(user)
+                d = dict(user)
+                d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
+                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
+                return True, "No PIN set", d
+            
+            stored_hash = user.get('pin_hash')
+            if verify_pin(pin, stored_hash):
+                # If it's a legacy hash, transparently migrate to PBKDF2
+                if not stored_hash.startswith("pbkdf2_sha256$"):
+                    new_hash = hash_pin(pin)
+                    cur.execute("UPDATE users SET pin_hash = %s, updated_at = NOW() WHERE id = %s", (new_hash, user['id']))
+                    conn.commit()
+                    user['pin_hash'] = new_hash
+                d = dict(user)
+                d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
+                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
+                return True, "Authenticated", d
             return False, "Invalid PIN", None
     finally:
         release_connection(conn)
@@ -382,8 +539,8 @@ def get_movie_ids_by_slugs(slugs):
     """
     Maps Letterboxd slugs to already-known TMDB ids.
 
-    This is what makes a re-sync cheap: any film already resolved by this user - or by
-    any other user, since `movies` is shared - never hits the TMDB search API again.
+    Only returns movies that have a real TMDB id (< 900000000) and non-empty poster_path,
+    ensuring that unhydrated placeholders are properly re-resolved against TMDB.
     """
     clean = [str(s).strip() for s in (slugs or []) if str(s or '').strip()]
     if not clean:
@@ -393,7 +550,8 @@ def get_movie_ids_by_slugs(slugs):
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT letterboxd_slug, movie_id FROM movies "
-                "WHERE letterboxd_slug = ANY(%s) AND letterboxd_slug IS NOT NULL",
+                "WHERE letterboxd_slug = ANY(%s) AND letterboxd_slug IS NOT NULL "
+                "AND movie_id < 900000000 AND poster_path IS NOT NULL AND poster_path != ''",
                 (clean,)
             )
             return {r[0]: r[1] for r in cur.fetchall()}
@@ -540,6 +698,39 @@ def get_user_diary(username: str, search: str = '', rating_filter: str = 'All', 
     finally:
         release_connection(conn)
 
+def get_user_diary_map(user_id: int):
+    """
+    Returns a dict mapping known slugs, movie_ids, and titles to their diary record:
+    {'mid_123': {...}, 'slug_inception': {...}, 'title_inception': {...}}
+    for fast O(1) incremental sync diffing.
+    """
+    if not user_id:
+        return {}
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT d.movie_id, d.rating, d.watched_date, m.letterboxd_slug, m.title, m.year, m.poster_path
+                FROM user_diary d
+                JOIN movies m ON d.movie_id = m.movie_id
+                WHERE d.user_id = %s
+            """, (user_id,))
+            rows = cur.fetchall()
+            diary_map = {}
+            for r in rows:
+                item = dict(r)
+                mid = item['movie_id']
+                slug = str(item.get('letterboxd_slug') or '').strip().lower()
+                title = str(item.get('title') or '').strip().lower()
+                diary_map[f"mid_{mid}"] = item
+                if slug:
+                    diary_map[f"slug_{slug}"] = item
+                if title:
+                    diary_map[f"title_{title}"] = item
+            return diary_map
+    finally:
+        release_connection(conn)
+
 # ── User Watchlist Operations ──
 
 def upsert_user_watchlist(user_id: int, watchlist_entries):
@@ -663,3 +854,93 @@ def get_diary_training_df(username: str):
             return pd.DataFrame(rows)
     finally:
         release_connection(conn)
+
+def get_user_taste_anchors(username: str):
+    """
+    Extracts a quick, high-signal taste profile (top directors, 5★ favorites, top genres)
+    from the user's logged diary in Neon DB for grounding AI prompts.
+    """
+    user = get_user(username)
+    if not user:
+        return {'top_directors': [], 'favorite_movies': [], 'top_genres': [], 'preferred_decades': []}
+
+    cache_key = f"anchors_{user['id']}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    records, total, _ = get_user_diary(username, sort_mode='Highest Rating First')
+    if not records:
+        empty_res = {'top_directors': [], 'favorite_movies': [], 'top_genres': [], 'preferred_decades': []}
+        _set_cache(cache_key, empty_res)
+        return empty_res
+
+    # 1. Top 5-star / High-rated Favorites
+    fav_movies = []
+    seen_titles = set()
+    for r in records:
+        r_score = r.get('Rating') or r.get('rating')
+        t = str(r.get('title') or '').strip()
+        if r_score and float(r_score) >= 4.0 and t and t.lower() not in seen_titles:
+            seen_titles.add(t.lower())
+            fav_movies.append(t)
+            if len(fav_movies) >= 5:
+                break
+
+    # 2. Top Directors
+    director_scores = {}
+    director_counts = {}
+    for r in records:
+        r_score = r.get('Rating') or r.get('rating')
+        director = str(r.get('director') or '').strip()
+        if not director or director.lower() in ('nan', 'none', 'unknown'):
+            continue
+        # Split in case multiple directors listed
+        for d in re.split(r'[,/]', director):
+            d_clean = d.strip()
+            if not d_clean or len(d_clean) < 3:
+                continue
+            director_counts[d_clean] = director_counts.get(d_clean, 0) + 1
+            if r_score:
+                director_scores.setdefault(d_clean, []).append(float(r_score))
+
+    # Prefer directors with multiple logged films and high avg rating
+    scored_directors = []
+    for d, counts in director_counts.items():
+        scores = director_scores.get(d, [3.5])
+        avg_score = sum(scores) / len(scores)
+        # Weight by count and avg score
+        if avg_score >= 3.5:
+            scored_directors.append((d, avg_score, counts))
+
+    scored_directors.sort(key=lambda x: (x[1] >= 4.0, x[2], x[1]), reverse=True)
+    top_directors = [d[0] for d in scored_directors[:4]]
+
+    # 3. Top Genres
+    genre_counts = {}
+    for r in records:
+        g_str = str(r.get('genres') or '')
+        for g in g_str.split(','):
+            g_clean = g.strip()
+            if g_clean and g_clean.lower() not in ('nan', 'none', 'general'):
+                genre_counts[g_clean] = genre_counts.get(g_clean, 0) + 1
+    top_genres = [g[0] for g in sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:4]]
+
+    # 4. Preferred Decades
+    decade_counts = {}
+    for r in records:
+        y_str = str(r.get('year') or '')[:4]
+        if y_str.isdigit() and len(y_str) == 4:
+            dec = f"{y_str[:3]}0s"
+            decade_counts[dec] = decade_counts.get(dec, 0) + 1
+    top_decades = [d[0] for d in sorted(decade_counts.items(), key=lambda x: x[1], reverse=True)[:3]]
+
+    anchors = {
+        'top_directors': top_directors,
+        'favorite_movies': fav_movies[:4],
+        'top_genres': top_genres,
+        'preferred_decades': top_decades
+    }
+    _set_cache(cache_key, anchors)
+    return anchors
+

@@ -1,21 +1,51 @@
 import os
 import sys
 import json
+import threading
+import time
 import urllib.parse
+from collections import defaultdict
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import pandas as pd
+
+# IP + Username login rate limiter state (max 5 failures per 15 mins)
+_login_failures = defaultdict(list)
+_failures_lock = threading.Lock()
+
+def check_login_rate_limit(ip, username):
+    now = time.time()
+    key = (ip, username.lower())
+    with _failures_lock:
+        _login_failures[key] = [t for t in _login_failures[key] if now - t < 900]
+        if len(_login_failures[key]) >= 5:
+            return False, int(900 - (now - _login_failures[key][0]))
+    return True, 0
+
+def record_login_failure(ip, username):
+    now = time.time()
+    key = (ip, username.lower())
+    with _failures_lock:
+        _login_failures[key].append(now)
+
+def reset_login_failures(ip, username):
+    key = (ip, username.lower())
+    with _failures_lock:
+        _login_failures.pop(key, None)
 
 from backend.config import BASE_DIR, TMDB_KEY, GEMINI_API_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME
 from backend.db import (
     init_db, get_user, get_or_create_user, verify_user_pin, get_user_diary,
     get_user_watchlist, add_to_user_watchlist, remove_from_user_watchlist,
-    upsert_movies_batch, upsert_user_diary
+    upsert_movies_batch, upsert_user_diary, get_user_taste_anchors
 )
 from backend.in_memory_model import get_or_train_user_model, invalidate_user_model, train_user_model_in_memory
-from backend.jobs import start_onboarding_job, start_csv_import_job, get_job_status
+from backend.jobs import (
+    start_onboarding_job, start_diary_sync_job, start_watchlist_sync_job,
+    start_csv_import_job, get_job_status, repair_user_unhydrated_movies
+)
 from backend.predictions import predict_movie_score, predict_movie_scores_batch, get_post_watch_recommendations, get_watch_providers
-from backend.gemini_client import interpret_query_with_ai
+from backend.gemini_client import interpret_query_with_ai, generate_matchmaker_pitch
 from backend.recommender import analyze, titleNormalize, http_session
 from backend.watchlist import get_mood_cluster, pick_movie_for_tonight
 
@@ -38,14 +68,16 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if isinstance(data, dict) and 'username' in data:
             val = data.get('username')
             if isinstance(val, list): val = val[0] if val else ''
-            return str(val).strip().lstrip('@').lower() if val else ''
+            val_str = str(val).strip().lstrip('@').lower() if val else ''
+            if val_str and val_str != 'guest':
+                return val_str
         header_u = self.headers.get('X-Letterboxd-User')
         if header_u is not None:
             clean_h = header_u.strip().lstrip('@').lower()
             if clean_h and clean_h != 'guest':
                 return clean_h
             return ''
-        return (LETTERBOXD_USERNAME or '').strip().lstrip('@').lower()
+        return ''
 
     def _get_request_keys(self, user=None, body=None, query=None):
         """
@@ -87,15 +119,48 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
         return tmdb, gemini
 
+    def _get_allowed_origin(self):
+        origin = self.headers.get('Origin')
+        if not origin:
+            return None
+        origin = origin.strip().rstrip('/')
+        allowed = [
+            'https://mbm-recommender.vercel.app',
+            'https://mbmr.onrender.com',
+            'http://localhost:8899',
+            'http://127.0.0.1:8899',
+            'http://localhost:3000',
+            'http://127.0.0.1:3000'
+        ]
+        if origin in allowed:
+            return origin
+        return None
+
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
         self.send_header('Pragma', 'no-cache')
         self.send_header('Expires', '0')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('X-XSS-Protection', '1; mode=block')
+        self.send_header('Referrer-Policy', 'strict-origin-when-cross-origin')
+        self.send_header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+        self.send_header('Content-Security-Policy', 
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data: https://image.tmdb.org https://a.ltrbxd.com; "
+            "connect-src 'self' https://api.themoviedb.org https://generativelanguage.googleapis.com;"
+        )
         super().end_headers()
 
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        allowed_origin = self._get_allowed_origin()
+        if allowed_origin:
+            self.send_header('Access-Control-Allow-Origin', allowed_origin)
+            self.send_header('Access-Control-Allow-Credentials', 'true')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-TMDB-Key, X-Gemini-Key, X-Letterboxd-User, X-User-Pin')
         self.end_headers()
@@ -105,7 +170,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
-        self.send_header('Access-Control-Allow-Origin', '*')
+        allowed_origin = self._get_allowed_origin()
+        if allowed_origin:
+            self.send_header('Access-Control-Allow-Origin', allowed_origin)
+            self.send_header('Access-Control-Allow-Credentials', 'true')
         self.end_headers()
         self.wfile.write(body)
 
@@ -137,6 +205,12 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         content_length = int(self.headers.get('Content-Length', 0))
+        
+        # Max size check: 10MB
+        if content_length > 10 * 1024 * 1024:
+            self._send_json({'error': 'Payload too large'}, 413)
+            return
+
         post_data = self.rfile.read(content_length) if content_length > 0 else b'{}'
         
         try:
@@ -183,12 +257,18 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'success': False, 'message': 'Username is required'}, 400)
             return
 
+        # Verify PIN before updating keys
+        ok, msg, user_obj = verify_user_pin(user, pin)
+        if not ok:
+            self._send_json({'success': False, 'message': 'Invalid PIN. Keys cannot be updated.'}, 401)
+            return
+
         u = get_or_create_user(user, pin=pin or None, tmdb_key=tmdb or None, gemini_key=gemini or None)
         if u:
             self._send_json({'success': True, 'message': 'API keys updated successfully', 'user': {
                 'username': u['username'],
-                'tmdb_key': u.get('tmdb_key', ''),
-                'gemini_key': u.get('gemini_key', '')
+                'has_tmdb': bool(u.get('tmdb_key')),
+                'has_gemini': bool(u.get('gemini_key'))
             }})
         else:
             self._send_json({'success': False, 'message': 'Failed to update user keys'}, 500)
@@ -214,18 +294,30 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'success': False, 'message': 'Username is required'}, 400)
             return
 
+        # Resolve IP for rate limiting
+        ip = self.headers.get('X-Forwarded-For', self.client_address[0]).split(',')[0].strip()
+        allowed, wait_sec = check_login_rate_limit(ip, username)
+        if not allowed:
+            self._send_json({
+                'success': False,
+                'message': f'Too many failed attempts. Please wait {wait_sec} seconds before trying again.'
+            }, 429)
+            return
+
         ok, msg, user = verify_user_pin(username, pin)
         if ok and user:
+            reset_login_failures(ip, username)
             self._send_json({
                 'success': True,
                 'message': 'Login successful',
                 'user': {
                     'username': user['username'],
-                    'tmdb_key': user.get('tmdb_key', ''),
-                    'gemini_key': user.get('gemini_key', '')
+                    'has_tmdb': bool(user.get('tmdb_key')),
+                    'has_gemini': bool(user.get('gemini_key'))
                 }
             })
         else:
+            record_login_failure(ip, username)
             self._send_json({'success': False, 'message': msg or 'Invalid credentials'}, 401)
 
     def _handle_onboarding_start(self, body):
@@ -236,6 +328,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
         if not username:
             self._send_json({'success': False, 'message': 'Letterboxd username is required'}, 400)
+            return
+
+        if not pin or len(pin) < 4:
+            self._send_json({'success': False, 'message': 'A 4-6 digit PIN is required to secure your profile for multi-device login'}, 400)
             return
 
         job_id = start_onboarding_job(username, pin=pin, tmdb_key=tmdb, gemini_key=gemini)
@@ -260,12 +356,20 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         total_films = 0
         avg_rating = 0.0
         watchlist_count = 0
+        has_tmdb = False
+        has_gemini = False
 
         if user:
             try:
                 _, total_films, avg_rating = get_user_diary(user)
                 wl = get_user_watchlist(user)
                 watchlist_count = len(wl)
+                
+                # Fetch keys status
+                user_obj = get_user(user)
+                if user_obj:
+                    has_tmdb = bool(user_obj.get('tmdb_key'))
+                    has_gemini = bool(user_obj.get('gemini_key'))
             except Exception as e:
                 print(f"Status query error: {e}")
 
@@ -279,6 +383,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             'watchlist_count': watchlist_count,
             'avg_rating': avg_rating,
             'model_status': model_status,
+            'has_tmdb': has_tmdb,
+            'has_gemini': has_gemini,
             'version': '5.0.0 (Neon DB Edition)'
         })
 
@@ -317,9 +423,20 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                     'Rating': float(r.get('Rating') or 3.5) if r.get('Rating') is not None else None,
                     'Date': str(r.get('Date') or '')
                 })
+            # If any diary records lack posters or are unhydrated placeholders, self-heal in background
+            has_unhydrated = any(
+                (not r.get('poster_path')) or int(r.get('movie_id') or 0) >= 900000000 or r.get('genres') == 'General'
+                for r in records
+            )
+            if has_unhydrated:
+                tmdb_key, _ = self._get_request_keys(user=user, query=query)
+                if tmdb_key:
+                    threading.Thread(target=repair_user_unhydrated_movies, args=(user, tmdb_key), daemon=True).start()
+
             self._send_json({'films': cleaned, 'total': total})
         except Exception as e:
-            self._send_json({'error': str(e), 'films': [], 'total': 0}, 500)
+            print(f"[ERROR] _handle_diary: {e}")
+            self._send_json({'error': 'Internal server error', 'films': [], 'total': 0}, 500)
 
     def _handle_taste_radar(self, query=None):
         user = self._get_request_user(query)
@@ -348,7 +465,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             ]
             self._send_json({'radar': radar_data, 'badges': badges})
         except Exception as e:
-            self._send_json({'radar': [], 'badges': [], 'error': str(e)})
+            print(f"[ERROR] _handle_taste_radar: {e}")
+            self._send_json({'radar': [], 'badges': [], 'error': 'Internal server error'})
 
     def _handle_get_watchlist(self, query):
         user = self._get_request_user(query)
@@ -428,7 +546,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
             self._send_json({'watchlist': items, 'total': len(items)})
         except Exception as e:
-            self._send_json({'error': str(e), 'watchlist': [], 'total': 0}, 500)
+            print(f"[ERROR] _handle_get_watchlist: {e}")
+            self._send_json({'error': 'Internal server error', 'watchlist': [], 'total': 0}, 500)
 
     def _handle_add_watchlist(self, body):
         user = self._get_request_user(body)
@@ -522,9 +641,15 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
         candidates.sort(key=lambda x: (x.get('ai_score', 0), x.get('vote_average', 0)), reverse=True)
         winner = candidates[0]
-        winner['pitch'] = (
-            f"Selected as your #1 match tonight with a {int(winner['ai_score'] * 20)}% personal affinity score. "
-            f"At {winner['runtime'] or 'feature'} min, this {', '.join(winner['clusters'][:2])} pick unwinds decision fatigue."
+        
+        # Ground matchmaker pitch with user taste anchors and Gemini
+        taste_anchors = get_user_taste_anchors(user) if user else None
+        winner['pitch'] = generate_matchmaker_pitch(
+            winner,
+            user_taste=taste_anchors,
+            duration_pref=duration,
+            mood_pref=mood,
+            custom_api_key=gemini_key
         )
         winner['providers'] = get_watch_providers(winner['movie_id'], tmdb_key=tmdb_key)
         self._send_json({'success': True, 'movie': winner, 'message': 'Match found!'})
@@ -544,22 +669,24 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         # Load user watched titles & IDs from Neon DB
         watched_titles = []
         watched_ids = []
+        taste_context = None
         if user:
             try:
                 diary_rows, _, _ = get_user_diary(user)
                 watched_titles = [titleNormalize(r['title']) for r in diary_rows if r.get('title')]
                 watched_ids = [r['movie_id'] for r in diary_rows if r.get('movie_id')]
+                taste_context = get_user_taste_anchors(user)
             except Exception:
                 pass
 
         ai_model, ai_columns, ai_vectorizer, ai_encoders = get_or_train_user_model(user) if user else (None, None, None, None)
-        ai_analysis = interpret_query_with_ai(prompt, custom_api_key=gemini_key)
+        ai_analysis = interpret_query_with_ai(prompt, custom_api_key=gemini_key, taste_context=taste_context)
 
         picks = analyze(
             watched_titles, watched_ids, [],
             ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders,
             user_context=context, streaming_filter=streaming, raw_prompt=prompt,
-            source=source, username=user, tmdb_key=tmdb_key
+            source=source, username=user, tmdb_key=tmdb_key, gemini_key=gemini_key
         )
 
         # Sanitize picks against nan
@@ -577,7 +704,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 'vote_average': float(p.get('vote_average') or 7.0),
                 'ai_score': float(p.get('ai_score') or 3.8),
                 'is_direct_match': bool(p.get('is_direct_match', False)),
-                'is_watched': bool(p.get('is_watched', False))
+                'is_watched': bool(p.get('is_watched', False)),
+                'vibe_pitch': str(p.get('vibe_pitch') or '')
             })
 
         self._send_json({
@@ -617,7 +745,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 })
             self._send_json({'results': clean_results})
         except Exception as e:
-            self._send_json({'error': str(e), 'results': []}, 500)
+            print(f"[ERROR] _handle_search_tmdb: {e}")
+            self._send_json({'error': 'Internal server error', 'results': []}, 500)
 
     def _handle_ripple(self, query):
         movie_id = query.get('movie_id', [''])[0]
@@ -648,7 +777,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             )
             self._send_json({'movie_id': int(movie_id), 'ripples': ripples})
         except Exception as e:
-            self._send_json({'error': str(e)}, 500)
+            print(f"[ERROR] _handle_ripple: {e}")
+            self._send_json({'error': 'Internal server error'}, 500)
 
     def _handle_log_movie(self, body):
         user = self._get_request_user(body)
@@ -698,17 +828,18 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if not user:
             self._send_json({'success': False, 'message': 'Username required'})
             return
-        # Start async onboarding job for full sync
-        job_id = start_onboarding_job(user)
-        self._send_json({'success': True, 'job_id': job_id, 'message': 'Sync started in background'})
+        tmdb_key, _ = self._get_request_keys(user=user, body=body)
+        job_id = start_watchlist_sync_job(user, tmdb_key=tmdb_key)
+        self._send_json({'success': True, 'job_id': job_id, 'message': 'Watchlist sync started in background'})
 
     def _handle_sync_letterboxd(self, body):
         user = self._get_request_user(body)
         if not user:
             self._send_json({'success': False, 'message': 'Username required'})
             return
-        job_id = start_onboarding_job(user)
-        self._send_json({'success': True, 'job_id': job_id, 'message': 'Sync started in background'})
+        tmdb_key, gemini_key = self._get_request_keys(user=user, body=body)
+        job_id = start_onboarding_job(user, tmdb_key=tmdb_key, gemini_key=gemini_key)
+        self._send_json({'success': True, 'job_id': job_id, 'message': 'Diary sync started in background'})
 
     def _handle_retrain(self, body=None):
         user = self._get_request_user(body)

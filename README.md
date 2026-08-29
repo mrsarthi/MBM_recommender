@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests: Passing](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
 
-> **🌐 Try the Live Web App**: **[https://mbmr.onrender.com](https://mbmr.onrender.com)**
+> **🌐 Try the Live Web App**: **[https://mbm-recommender-nine.vercel.app/](https://mbm-recommender-nine.vercel.app/)**
 
 **MBMR (Mood-Based Movie Recommender)** is a personalized AI-powered cinema recommendation engine and modern Letterboxd companion. It learns your unique film taste using a machine learning model trained on your Letterboxd diary, interprets natural language vibes and moods with Google Gemini AI, clusters your watchlist, and predicts how much you will love any movie.
 
@@ -17,14 +17,15 @@
 
 ## ✨ Features
 
-- **🧠 Personal AI Taste Model**: Custom **Random Forest** regression model trained on your logged Letterboxd ratings, genres, directors, cast, and keyword affinities to predict your exact star rating (±0.6★ error).
-- **🎭 Mood-Based & Title Search**: Search for movie titles, directors, or natural language vibes (*"gritty 90s cyber thriller with neon aesthetics"*, *"melancholic coming-of-age on a rainy night"*). Powered by Google Gemini AI with instant fallback heuristics.
+- **🧠 Two-Stage Hybrid AI Recommendation Engine**: Combines **Google Gemini AI** semantic vibe discovery with your **Local Random Forest** taste model. Gemini interprets nuanced natural language vibes grounded by your Letterboxd taste anchors (top directors, 5★ favorites, high-affinity genres), purges all movies you've already seen, and ranks candidates from highest to lowest predicted likeness.
+- **🎭 Taste-Aware Mood & Vibe Search**: Search for movie titles or natural language vibes (*"gritty 90s cyber thriller with neon aesthetics"*, *"melancholic coming-of-age on a rainy night"*). Gemini generates curated candidate films with 1-sentence **AI Vibe Pitches** explaining why each film fits your mood.
+- **🚫 100% Unseen Discovery Guarantee**: Automated deduplication against your synced Letterboxd diary and ratings ensures you never waste time seeing recommendations for films you already logged.
+- **🎲 "Pick For Me Tonight" AI Matchmaker**: Tell MBMR your available time, current mood, and streaming platform. The AI picks the single best movie from your watchlist with a personalized, witty matchmaker pitch (*"Since you loved Drive and have 90 mins..."*).
 - **🔖 Intelligent Watchlist with Mood Clusters**: Organize your Letterboxd watchlist into smart clusters (*🛋️ Comfort, 🧠 Mind-Bending, 🍿 Popcorn & Adrenaline, ⏳ Quick <105m*) with streaming platform filters.
-- **🎲 "Pick For Me Tonight" Matchmaker**: Tell MBMR your available time and current mood, and let the AI pick the single best movie from your watchlist with a personalized pitch.
 - **📖 Visual Film Journal (Diary)**: Browse your entire watch history with high-resolution TMDB posters, dual view modes (**List View ≡** and **Poster Grid ⊞**), and rating filters.
-- **🎬 Cinema Spotlight Drawer**: Click any film to inspect its 4K backdrop, synopsis, streaming providers (Netflix, Prime, Apple TV, etc.), and **Post-Watch Ripple Recommendations**.
+- **🎬 Cinema Spotlight Drawer**: Click any film to inspect its 4K backdrop, synopsis, streaming providers (Netflix, Prime, Apple TV, etc.), AI Vibe Match reason, and **Post-Watch Ripple Recommendations**.
 - **⚡ 1-Click Letterboxd Sync**: Sync your public Letterboxd watchlist (all of it) and your 50 most recent diary entries with one click, or retrain your AI model anytime directly from the UI.
-- **📥 Full History via CSV Import**: Letterboxd blocks automated paging past the first page of a diary, so syncing can only reach your 50 most recent entries. To load your **complete** watch history, export your data from [Letterboxd → Settings → Import & Export → Export Your Data](https://letterboxd.com/settings/data/) and drop the `ratings.csv` (or `diary.csv` / `watchlist.csv`) onto the import control. Every film is matched against TMDB for posters, genres, cast and keywords, then your AI model recalibrates automatically.
+- **📥 Full History via CSV Import**: Export your complete watch history from Letterboxd (`ratings.csv`, `diary.csv`, `watchlist.csv`) and drop it onto MBMR for automated ingestion, TMDB poster hydration, and model recalibration.
 - **📱 Fully Responsive Mobile App & PWA**: Seamless experience across mobile phones, tablets, and desktops with bottom navigation dock, safe-area padding, and IndexedDB local client storage.
 
 ---
@@ -32,12 +33,13 @@
 ## 🌐 Live Web App
 
 MBMR is deployed and ready to use at:
-👉 **[https://mbmr.onrender.com](https://mbmr.onrender.com)**
+👉 **[https://mbm-recommender-nine.vercel.app/](https://mbm-recommender-nine.vercel.app/)**
 
 When you visit for the first time:
-1. The **MBMR Onboarding Wizard** will prompt you to enter your **Letterboxd Username** (`@handle`).
-2. Optionally enter your own free **TMDB** and **Google Gemini** API keys.
-3. All credentials and preferences are **stored 100% locally in your browser (IndexedDB)** — your data remains private and is never stored on the server.
+1. The **MBMR Onboarding Wizard** will prompt you to enter your **Letterboxd Username** (`@handle`) and a 4-6 digit PIN.
+2. Enter your free **TMDB API Key** (required for posters, metadata, and cast).
+3. Optionally enter your free **Google Gemini API Key** for deep semantic mood reasoning, bespoke 1-sentence vibe pitches, and dynamic AI watchlist ranking (or leave blank to use the **In-Built Machine Learning Model Fallback**).
+4. All credentials and preferences are **stored 100% locally in your browser (IndexedDB)** — your data remains private and secure.
 
 ---
 

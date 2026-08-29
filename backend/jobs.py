@@ -7,10 +7,13 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 
+from psycopg2.extras import RealDictCursor
 from backend.config import TMDB_KEY, TMDB_BASE_URL
 from backend.db import (
-    get_or_create_user, upsert_movies_batch, upsert_user_diary,
-    upsert_user_watchlist, get_movie_ids_by_slugs, stable_movie_id
+    get_or_create_user, get_user, upsert_movies_batch, upsert_user_diary,
+    upsert_user_watchlist, get_movie_ids_by_slugs, stable_movie_id,
+    get_user_diary_map, cleanup_database_duplicates, invalidate_user_cache,
+    get_connection, release_connection
 )
 from backend.in_memory_model import train_user_model_in_memory
 
@@ -94,6 +97,60 @@ def start_onboarding_job(username, pin=None, tmdb_key=None, gemini_key=None):
     t = threading.Thread(
         target=_run_onboarding_pipeline,
         args=(job_id, clean_user, pin, tmdb_key, gemini_key),
+        daemon=True
+    )
+    t.start()
+    return job_id
+
+
+def start_watchlist_sync_job(username, tmdb_key=None):
+    clean_user = (username or '').strip().lstrip('@').lower()
+    job_id = str(uuid.uuid4())
+
+    with _jobs_lock:
+        _prune_jobs()
+        _jobs[job_id] = {
+            'job_id': job_id,
+            'username': clean_user,
+            'status': 'running',
+            'progress': 5,
+            'stage': 'init',
+            'message': 'Connecting to Letterboxd watchlist...',
+            'error': None,
+            'watchlist_count': 0,
+            'start_time': time.time()
+        }
+
+    t = threading.Thread(
+        target=_run_watchlist_sync_pipeline,
+        args=(job_id, clean_user, tmdb_key),
+        daemon=True
+    )
+    t.start()
+    return job_id
+
+
+def start_diary_sync_job(username, tmdb_key=None):
+    clean_user = (username or '').strip().lstrip('@').lower()
+    job_id = str(uuid.uuid4())
+
+    with _jobs_lock:
+        _prune_jobs()
+        _jobs[job_id] = {
+            'job_id': job_id,
+            'username': clean_user,
+            'status': 'running',
+            'progress': 5,
+            'stage': 'init',
+            'message': 'Checking latest Letterboxd diary entries...',
+            'error': None,
+            'diary_count': 0,
+            'start_time': time.time()
+        }
+
+    t = threading.Thread(
+        target=_run_diary_sync_pipeline,
+        args=(job_id, clean_user, tmdb_key),
         daemon=True
     )
     t.start()
@@ -530,20 +587,338 @@ def resolve_entries(entries, tmdb_k, job_id=None, base_progress=0, span=0, label
 
     return movie_records, slug_to_id
 
+def repair_user_unhydrated_movies(username: str, tmdb_key: str = None) -> int:
+    """
+    Finds any diary or watchlist entries for a user that are missing posters or are placeholders,
+    resolves them on TMDB, and updates the database records.
+    """
+    user = get_user(username)
+    if not user:
+        return 0
 
-# ── Pipeline ──
+    active_tmdb = tmdb_key or (user.get('tmdb_key') if user else '') or TMDB_KEY
+    if not active_tmdb:
+        return 0
+
+    conn = get_connection()
+    missing_entries = []
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT DISTINCT m.movie_id, m.title, m.year, m.letterboxd_slug, d.watched_date, d.rating
+                FROM user_diary d
+                JOIN movies m ON d.movie_id = m.movie_id
+                WHERE d.user_id = %s
+                  AND (m.poster_path IS NULL OR m.poster_path = '' OR m.movie_id >= 900000000 OR m.genres = 'General')
+            """, (user['id'],))
+            diary_missing = cur.fetchall()
+            for r in diary_missing:
+                missing_entries.append({
+                    'slug': r.get('letterboxd_slug') or title_normalize(r.get('title')),
+                    'title': r.get('title'),
+                    'year_hint': r.get('year'),
+                    'rating': r.get('rating'),
+                    'watched_date': r.get('watched_date') or ''
+                })
+
+            cur.execute("""
+                SELECT DISTINCT m.movie_id, m.title, m.year, m.letterboxd_slug, w.added_date
+                FROM user_watchlist w
+                JOIN movies m ON w.movie_id = m.movie_id
+                WHERE w.user_id = %s
+                  AND (m.poster_path IS NULL OR m.poster_path = '' OR m.movie_id >= 900000000 OR m.genres = 'General')
+            """, (user['id'],))
+            wl_missing = cur.fetchall()
+            for r in wl_missing:
+                missing_entries.append({
+                    'slug': r.get('letterboxd_slug') or title_normalize(r.get('title')),
+                    'title': r.get('title'),
+                    'year_hint': r.get('year')
+                })
+    finally:
+        release_connection(conn)
+
+    if not missing_entries:
+        return 0
+
+    # Deduplicate entries by slug
+    deduped_entries = {}
+    for e in missing_entries:
+        slug = e.get('slug') or title_normalize(e.get('title'))
+        if slug and slug not in deduped_entries:
+            deduped_entries[slug] = e
+
+    entries_to_resolve = list(deduped_entries.values())
+    movie_records, slug_to_id = resolve_entries(entries_to_resolve, active_tmdb, label='unhydrated films')
+
+    if movie_records:
+        upsert_movies_batch(movie_records)
+
+    diary_updates = []
+    for e in entries_to_resolve:
+        if 'watched_date' in e or 'rating' in e:
+            mid = slug_to_id.get(e['slug'])
+            if mid:
+                diary_updates.append({
+                    'movie_id': mid,
+                    'rating': e.get('rating'),
+                    'watched_date': e.get('watched_date') or ''
+                })
+
+    if diary_updates:
+        upsert_user_diary(user['id'], diary_updates)
+
+    cleanup_database_duplicates(user['id'])
+    invalidate_user_cache(user['id'])
+    return len(movie_records)
+
+
+# ── Pipelines ──
+
+def _run_watchlist_sync_pipeline(job_id, username, tmdb_key):
+    try:
+        user = get_or_create_user(username, tmdb_key=tmdb_key)
+        if not user:
+            _update_job(job_id, 100, 'error', 'Failed to find or create user profile',
+                        status='failed', error='User creation failed')
+            return
+
+        active_tmdb = tmdb_key or (user.get('tmdb_key') if user else '') or TMDB_KEY
+
+        _update_job(job_id, 15, 'watchlist_scrape', 'Reading Letterboxd watchlist for @{0}...'.format(username))
+        session = get_scrape_session()
+        wl_entries = scrape_letterboxd_watchlist(username, session=session)
+
+        _update_job(job_id, 45, 'watchlist_scrape',
+                    'Found {0} watchlist films.'.format(len(wl_entries)),
+                    watchlist_count=len(wl_entries))
+
+        wl_links = []
+        if wl_entries:
+            wl_records, wl_slug_to_id = resolve_entries(
+                wl_entries, active_tmdb, job_id=job_id,
+                base_progress=45, span=40, label='watchlist films'
+            )
+            if wl_records:
+                upsert_movies_batch(wl_records)
+            today = pd.Timestamp.now().strftime('%Y-%m-%d')
+            for e in wl_entries:
+                mid = wl_slug_to_id.get(e['slug'])
+                if mid:
+                    wl_links.append({'movie_id': mid, 'added_date': today})
+            if wl_links:
+                upsert_user_watchlist(user['id'], wl_links)
+
+        cleanup_database_duplicates(user['id'])
+        invalidate_user_cache(user['id'])
+
+        _update_job(
+            job_id, 100, 'completed',
+            'Done - Synced {0} watchlist films.'.format(len(wl_links)),
+            status='completed', watchlist_count=len(wl_links)
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _update_job(job_id, 100, 'failed', 'Watchlist sync failed: {0}'.format(e),
+                    status='failed', error=str(e))
+
+
+def _run_diary_sync_pipeline(job_id, username, tmdb_key):
+    try:
+        user = get_or_create_user(username, tmdb_key=tmdb_key)
+        if not user:
+            _update_job(job_id, 100, 'error', 'Failed to find or create user profile',
+                        status='failed', error='User creation failed')
+            return
+
+        active_tmdb = tmdb_key or (user.get('tmdb_key') if user else '') or TMDB_KEY
+
+        _update_job(job_id, 10, 'diary_check', 'Checking for new diary entries for @{0}...'.format(username))
+        existing_map = get_user_diary_map(user['id'])
+
+        session = get_scrape_session()
+        is_curl = getattr(session, 'is_curl_cffi', False) or ('curl_cffi' in session.__class__.__module__)
+
+        new_or_updated = []
+        seen_slugs = set()
+        max_sync_pages = 5
+
+        for page in range(1, max_sync_pages + 1):
+            _update_job(job_id, min(10 + page * 5, 35), 'diary_scrape',
+                        'Checking diary page {0}...'.format(page))
+            url = "{0}/{1}/films/diary/page/{2}/".format(LB_BASE, username, page)
+            try:
+                if is_curl:
+                    resp = session.get(url, impersonate="chrome", timeout=15)
+                else:
+                    resp = session.get(url, timeout=15)
+            except Exception:
+                break
+            if resp.status_code != 200:
+                break
+
+            rows = re.findall(r'<tr class="diary-entry-row.*?</tr>', resp.text, re.DOTALL)
+            if not rows:
+                break
+
+            page_new_count = 0
+            for row in rows:
+                slug_m = re.search(r'data-item-slug="([^"]+)"', row)
+                if not slug_m:
+                    continue
+                slug = slug_m.group(1).strip()
+                if slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+
+                name_m = re.search(r'data-item-name="([^"]*)"', row)
+                title, year = _split_title_year(name_m.group(1) if name_m else '')
+                if not title:
+                    title = slug.replace('-', ' ').title()
+                if not year:
+                    year = _year_from_slug(slug)
+
+                rating = None
+                rate_m = re.search(r'rated-(\d+)', row)
+                if rate_m:
+                    try:
+                        rating = round(int(rate_m.group(1)) / 2.0, 1)
+                    except ValueError:
+                        rating = None
+
+                watched_date = ''
+                date_m = re.search(r'/for/(\d{4})/(\d{2})/(\d{2})/', row)
+                if date_m:
+                    watched_date = "{0}-{1}-{2}".format(date_m.group(1), date_m.group(2), date_m.group(3))
+
+                existing = existing_map.get(f"slug_{slug.lower()}") or existing_map.get(f"title_{title.lower()}")
+                if existing:
+                    ex_rating = existing.get('rating')
+                    ex_date = existing.get('watched_date') or ''
+                    ex_mid = int(existing.get('movie_id') or 0)
+                    ex_poster = existing.get('poster_path') or ''
+                    if ex_mid < 900000000 and ex_poster:
+                        if (ex_rating == rating or (ex_rating is None and rating is None)) and (ex_date == watched_date or not watched_date):
+                            continue
+
+                page_new_count += 1
+                new_or_updated.append({
+                    'slug': slug, 'title': title, 'year_hint': year,
+                    'rating': rating, 'watched_date': watched_date
+                })
+
+            if page_new_count == 0 and len(rows) > 0:
+                break
+            if len(rows) < 50:
+                break
+
+        # Fallback to RSS if HTML scraping returned no entries and nothing was visited
+        if not new_or_updated and not seen_slugs:
+            try:
+                import xml.etree.ElementTree as ET
+                rss_url = "{0}/{1}/rss/".format(LB_BASE, username)
+                r_resp = session.get(rss_url, timeout=12)
+                if r_resp.status_code == 200:
+                    root = ET.fromstring(r_resp.content)
+                    ns = {'letterboxd': 'https://letterboxd.com', 'tmdb': 'https://www.themoviedb.org'}
+                    for item in root.findall('./channel/item'):
+                        title_elem = item.find('letterboxd:filmTitle', ns)
+                        year_elem = item.find('letterboxd:filmYear', ns)
+                        rating_elem = item.find('letterboxd:memberRating', ns)
+                        date_elem = item.find('letterboxd:watchedDate', ns)
+                        link_elem = item.find('link')
+
+                        title = title_elem.text.strip() if title_elem is not None and title_elem.text else ''
+                        if not title:
+                            raw_t = item.find('title')
+                            if raw_t is not None and raw_t.text:
+                                m = re.match(r'^(.*?),\s*(\d{4})?\s*-\s*([★½]+)?', raw_t.text)
+                                if m: title = m.group(1).strip()
+                        if not title: continue
+
+                        year = year_elem.text.strip() if year_elem is not None and year_elem.text else ''
+                        rating = None
+                        if rating_elem is not None and rating_elem.text:
+                            try: rating = float(rating_elem.text.strip())
+                            except: rating = None
+                        date = date_elem.text.strip() if date_elem is not None and date_elem.text else ''
+                        link = link_elem.text.strip() if link_elem is not None and link_elem.text else ''
+                        slug = link.rstrip('/').split('/')[-1] if link else title_normalize(title)
+
+                        existing = existing_map.get(f"slug_{slug.lower()}") or existing_map.get(f"title_{title.lower()}")
+                        if existing:
+                            ex_rating = existing.get('rating')
+                            ex_date = existing.get('watched_date') or ''
+                            ex_mid = int(existing.get('movie_id') or 0)
+                            ex_poster = existing.get('poster_path') or ''
+                            if ex_mid < 900000000 and ex_poster:
+                                if (ex_rating == rating or (ex_rating is None and rating is None)) and (ex_date == date or not date):
+                                    continue
+
+                        if slug not in seen_slugs:
+                            seen_slugs.add(slug)
+                            new_or_updated.append({
+                                'slug': slug, 'title': title, 'year_hint': year,
+                                'rating': rating, 'watched_date': date
+                            })
+            except Exception:
+                pass
+
+        if not new_or_updated:
+            _update_job(job_id, 100, 'completed', 'Your diary is already up to date (no new entries found).',
+                        status='completed', diary_count=0)
+            return
+
+        _update_job(job_id, 45, 'resolving', 'Resolving {0} new diary films on TMDB...'.format(len(new_or_updated)))
+        movie_records, slug_to_id = resolve_entries(
+            new_or_updated, active_tmdb, job_id=job_id,
+            base_progress=45, span=40, label='new diary films'
+        )
+
+        diary_links = []
+        for e in new_or_updated:
+            mid = slug_to_id.get(e['slug'])
+            if not mid:
+                continue
+            diary_links.append({
+                'movie_id': mid,
+                'rating': e.get('rating'),
+                'watched_date': e.get('watched_date') or ''
+            })
+
+        _update_job(job_id, 90, 'saving', 'Saving {0} new diary entries...'.format(len(diary_links)))
+        if movie_records:
+            upsert_movies_batch(movie_records)
+        if diary_links:
+            upsert_user_diary(user['id'], diary_links)
+
+        cleanup_database_duplicates(user['id'])
+        invalidate_user_cache(user['id'])
+
+        _update_job(
+            job_id, 100, 'completed',
+            'Done - Synced {0} new diary entries.'.format(len(diary_links)),
+            status='completed', diary_count=len(diary_links)
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _update_job(job_id, 100, 'failed', 'Diary sync failed: {0}'.format(e),
+                    status='failed', error=str(e))
+
 
 def _run_onboarding_pipeline(job_id, username, pin, tmdb_key, gemini_key):
     try:
-        active_tmdb = tmdb_key or TMDB_KEY
-
-        _update_job(job_id, 5, 'auth', 'Setting up profile for @{0}...'.format(username))
         user = get_or_create_user(username, pin=pin, tmdb_key=tmdb_key, gemini_key=gemini_key)
         if not user:
             _update_job(job_id, 100, 'error', 'Failed to create user record',
                         status='failed', error='User creation failed')
             return
 
+        active_tmdb = tmdb_key or (user.get('tmdb_key') if user else '') or TMDB_KEY
+
+        _update_job(job_id, 5, 'auth', 'Setting up profile for @{0}...'.format(username))
         session = get_scrape_session()
 
         # 1. Diary - every page, not just the 50-entry RSS window
@@ -605,6 +980,10 @@ def _run_onboarding_pipeline(job_id, username, pin, tmdb_key, gemini_key):
                     wl_links.append({'movie_id': mid, 'added_date': today})
             if wl_links:
                 upsert_user_watchlist(user['id'], wl_links)
+
+        # Clean up any potential duplicates & invalidate cache
+        cleanup_database_duplicates(user['id'])
+        invalidate_user_cache(user['id'])
 
         # 4. Train the in-memory taste model
         _update_job(job_id, 92, 'ai_training', 'Calibrating your personal AI taste model...')

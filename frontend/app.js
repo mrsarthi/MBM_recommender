@@ -77,13 +77,9 @@ const MBMRStorage = {
 
 const _nativeFetch = window.fetch.bind(window);
 async function mbmrFetch(url, options = {}) {
-    const tmdbKey = await MBMRStorage.get('tmdb_key');
-    const geminiKey = await MBMRStorage.get('gemini_key');
     const username = await MBMRStorage.get('letterboxd_username');
 
     options.headers = options.headers || {};
-    if (tmdbKey) options.headers['X-TMDB-Key'] = tmdbKey;
-    if (geminiKey) options.headers['X-Gemini-Key'] = geminiKey;
     if (username) options.headers['X-Letterboxd-User'] = username;
 
     return _nativeFetch(url, options);
@@ -97,8 +93,21 @@ window.fetch = function(url, options = {}) {
 };
 
 // Instant Hydration from persistent cache (0.0ms initial screen render)
-function hydrateFromStorage() {
+async function hydrateFromStorage() {
     try {
+        const username = await MBMRStorage.get('letterboxd_username');
+        if (!username) {
+            // Clean empty state for new/un-onboarded visitors
+            return;
+        }
+        const cachedUser = localStorage.getItem('mbmr_cached_user');
+        if (cachedUser && cachedUser !== username) {
+            // Cache belonged to a different user, purge stale data
+            localStorage.removeItem('mbmr_cached_watchlist');
+            localStorage.removeItem('mbmr_cached_diary');
+            localStorage.setItem('mbmr_cached_user', username);
+            return;
+        }
         const cachedWl = localStorage.getItem('mbmr_cached_watchlist');
         if (cachedWl) {
             const data = JSON.parse(cachedWl);
@@ -129,12 +138,38 @@ function hydrateFromStorage() {
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
-    hydrateFromStorage();
     await MBMRStorage.init();
-    checkOnboarding();
-    loadStatus();
-    loadWatchlistIds();
-    switchView('watchlist');
+    const needsOnboard = await checkOnboarding();
+    if (!needsOnboard) {
+        await hydrateFromStorage();
+        loadStatus();
+        loadWatchlistIds();
+        switchView('watchlist');
+    } else {
+        // Clean empty state behind onboarding modal for fresh visitors
+        // Clear ALL content areas so nothing from the host leaks through
+        const wlGrid = document.getElementById('watchlist-grid');
+        if (wlGrid) {
+            wlGrid.innerHTML = `
+                <div style="grid-column:1/-1;text-align:center;padding:80px 0;color:var(--text3);">
+                    <p style="font-size:16px;">Welcome to MBMR!</p>
+                    <p style="font-size:12px;margin-top:6px;">Complete onboarding to synchronize your Letterboxd watchlist &amp; ratings.</p>
+                </div>
+            `;
+        }
+        const filmsGrid = document.getElementById('films-grid');
+        if (filmsGrid) filmsGrid.innerHTML = '';
+        const journalGrid = document.getElementById('journal-grid');
+        if (journalGrid) journalGrid.innerHTML = '';
+
+        // Activate watchlist tab visually without triggering data fetch
+        document.querySelectorAll('.rail-icon').forEach(b => b.classList.toggle('active', b.dataset.view === 'watchlist'));
+        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+        const wlView = document.getElementById('view-watchlist');
+        if (wlView) wlView.classList.add('active');
+        const dockLabel = document.getElementById('dock-label');
+        if (dockLabel) dockLabel.textContent = 'Your Curated Watchlist';
+    }
     const promptInput = document.getElementById('prompt-input');
     if (promptInput) {
         if (!promptInput.value.trim()) {
@@ -150,15 +185,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 // ── Onboarding Controller ──
-async function checkOnboarding() {
-    const onboarded = await MBMRStorage.get('mbmr_onboarded');
-    if (!onboarded) {
-        setTimeout(() => {
-            const modal = document.getElementById('onboarding-modal');
-            if (modal) modal.style.display = 'flex';
-        }, 600);
-    }
-}
 
 async function loadStatus() {
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
@@ -281,24 +307,16 @@ async function generateRecommendations() {
         const sourceSelect = document.getElementById('recommend-source-select');
         const sourceVal = sourceSelect ? sourceSelect.value : 'all';
         const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
-        const tmdbKey = (await MBMRStorage.get('tmdb_key')) || '';
-        const geminiKey = (await MBMRStorage.get('gemini_key')) || '';
-
-        const headers = { 'Content-Type': 'application/json' };
-        if (tmdbKey) headers['X-TMDB-Key'] = tmdbKey;
-        if (geminiKey) headers['X-Gemini-Key'] = geminiKey;
 
         const res = await fetch(`${API}/api/recommend`, {
             method: 'POST',
-            headers,
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 prompt,
                 context: document.getElementById('context-select').value,
                 streaming: document.getElementById('stream-select').value,
                 source: sourceVal,
-                username,
-                tmdb_key: tmdbKey,
-                gemini_key: geminiKey
+                username
             })
         });
         const data = await res.json();
@@ -359,12 +377,9 @@ async function executeDirectMovieSearch() {
     
     try {
         const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
-        const tmdbKey = (await MBMRStorage.get('tmdb_key')) || '';
-        const headers = {};
-        if (tmdbKey) headers['X-TMDB-Key'] = tmdbKey;
 
         const res = await fetch(`${API}/api/search_tmdb?q=${encodeURIComponent(query)}&user=${encodeURIComponent(username)}`, {
-            headers
+            method: 'GET'
         });
         const data = await res.json();
         const results = data.results || [];
@@ -755,7 +770,6 @@ async function triggerWatchlistSync() {
     const localUser = await MBMRStorage.get('letterboxd_username');
     const inputUser = document.getElementById('sync-user-input')?.value.trim();
     const username = inputUser || localUser || '';
-    const tmdb = await MBMRStorage.get('tmdb_key');
 
     if (!username) {
         if (msg) msg.textContent = 'Please enter your username first.';
@@ -767,7 +781,7 @@ async function triggerWatchlistSync() {
     try {
         const res = await fetch(`${API}/api/watchlist/sync`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, tmdb_key: tmdb })
+            body: JSON.stringify({ username })
         });
         const d = await res.json();
         // The sync runs in the background; refreshing before it finishes shows stale data.
@@ -801,6 +815,19 @@ function openSpotlight(m, isFromDiary = false) {
     const pct = Math.min(99, Math.max(60, Math.round((m.ai_score || 3.5) * 20)));
     document.getElementById('spotlight-ai-score').textContent = isFromDiary && m.user_rating ? `Logged: ★ ${m.user_rating}` : `${pct}% Match`;
     document.getElementById('spotlight-overview').textContent = m.overview || 'No synopsis available.';
+    
+    const vibeBox = document.getElementById('spotlight-vibe-box');
+    const vibeText = document.getElementById('spotlight-vibe-pitch');
+    const pitch = m.vibe_pitch || (!isFromDiary && m.pitch ? m.pitch : '');
+    if (vibeBox && vibeText) {
+        if (pitch) {
+            vibeText.textContent = `"${pitch}"`;
+            vibeBox.style.display = 'flex';
+        } else {
+            vibeBox.style.display = 'none';
+        }
+    }
+
     document.getElementById('spotlight-backdrop-img').src = m.backdrop_path ? `${IMG1280}${m.backdrop_path}` : (m.poster_path ? `${IMG500}${m.poster_path}` : '');
     document.getElementById('spotlight-tmdb-link').href = `https://www.themoviedb.org/movie/${mId}`;
 
@@ -973,14 +1000,14 @@ function renderJournal(films) {
 
                 const date = f.Date ? fmtDate(f.Date) : '';
                 const stars = f.Rating ? fmtStars(f.Rating) : '<span style="color:var(--text3)">Unrated</span>';
-                const poster = f.poster_path ? `${IMG200}${f.poster_path}` : '';
+                const poster = f.poster_path ? (f.poster_path.startsWith('http') ? f.poster_path : `${IMG200}${f.poster_path.startsWith('/') ? '' : '/'}${f.poster_path}`) : '';
                 const genres = f.genres || '';
                 const title = diaryTitle(f);
                 const year = diaryYear(f);
 
                 row.innerHTML = `
                     <div class="j-poster-wrap">
-                        ${poster ? `<img src="${poster}" alt="${title}" class="j-poster" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;display:flex;align-items:center;justify-content:center;color:#555;font-size:10px;">🎬</div>'}
+                        ${poster ? `<img src="${poster}" alt="${title}" class="j-poster" loading="lazy" onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 300\\' fill=\\'%23222\\'%3E%3Crect width=\\'100%25\\' height=\\'100%25\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'24\\' fill=\\'%23666\\'%3E🎬%3C/text%3E%3C/svg%3E';">` : '<div style="width:100%;height:100%;background:#222;display:flex;align-items:center;justify-content:center;color:#555;font-size:10px;">🎬</div>'}
                     </div>
                     <div class="j-date">${date}</div>
                     <div class="j-info">
@@ -1000,13 +1027,13 @@ function renderJournal(films) {
                 card.className = 'poster-card';
                 card.onclick = () => openSpotlightFromDiary(f);
 
-                const poster = f.poster_path ? `${IMG500}${f.poster_path}` : '';
+                const poster = f.poster_path ? (f.poster_path.startsWith('http') ? f.poster_path : `${IMG500}${f.poster_path.startsWith('/') ? '' : '/'}${f.poster_path}`) : '';
                 const year = diaryYear(f);
                 const title = diaryTitle(f);
                 const rating = f.Rating ? parseFloat(f.Rating).toFixed(1) : '';
 
                 card.innerHTML = `
-                    ${poster ? `<img src="${poster}" alt="${title}" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
+                    ${poster ? `<img src="${poster}" alt="${title}" loading="lazy" onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 300\\' fill=\\'%23222\\'%3E%3Crect width=\\'100%25\\' height=\\'100%25\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'24\\' fill=\\'%23666\\'%3E🎬%3C/text%3E%3C/svg%3E';">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
                     ${rating ? `<span class="poster-badge journal-badge">★ ${rating}</span>` : ''}
                     <div class="poster-info">
                         <div class="poster-name">${title}</div>
@@ -1344,7 +1371,6 @@ async function triggerRSSSync() {
     const localUser = await MBMRStorage.get('letterboxd_username');
     const inputUser = document.getElementById('sync-user-input')?.value.trim();
     const username = inputUser || localUser || '';
-    const tmdb = await MBMRStorage.get('tmdb_key');
 
     if (!username) {
         if (msg) msg.textContent = 'Please enter your username first.';
@@ -1355,7 +1381,7 @@ async function triggerRSSSync() {
         const d = await (await fetch(`${API}/api/sync_letterboxd`, {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ username, tmdb_key: tmdb })
+            body: JSON.stringify({ username })
         })).json();
         if (d.job_id) {
             const final = await pollImportJob(d.job_id, (s) => {
@@ -1421,9 +1447,11 @@ async function checkOnboarding() {
     const user = await MBMRStorage.get('letterboxd_username');
     if (!user || user === 'guest') {
         openOnboardingModal();
+        return true;
     } else {
         const syncInput = document.getElementById('sync-user-input');
         if (syncInput) syncInput.value = user;
+        return false;
     }
 }
 
@@ -1450,10 +1478,17 @@ function nextOnboardStep(step) {
     const s1 = document.getElementById('onboard-step-1');
     const s2 = document.getElementById('onboard-step-2');
     const u = document.getElementById('onboard-username')?.value.trim();
+    const p = document.getElementById('onboard-pin')?.value.trim();
 
     if (step === 2) {
         if (!u) {
             alert('Please enter your Letterboxd username.');
+            document.getElementById('onboard-username')?.focus();
+            return;
+        }
+        if (!p || p.length < 4) {
+            alert('Please create a 4-6 digit PIN to secure your account and enable multi-device login.');
+            document.getElementById('onboard-pin')?.focus();
             return;
         }
         if (s1) s1.style.display = 'none';
@@ -1473,6 +1508,10 @@ async function submitLoginProfile() {
         if (errEl) { errEl.textContent = 'Please enter your Letterboxd username.'; errEl.style.display = 'block'; }
         return;
     }
+    if (!pin) {
+        if (errEl) { errEl.textContent = 'Please enter your 4-6 digit PIN.'; errEl.style.display = 'block'; }
+        return;
+    }
 
     try {
         const res = await fetch(`${API}/api/auth/login`, {
@@ -1488,19 +1527,56 @@ async function submitLoginProfile() {
 
         // Save authenticated credentials locally
         await MBMRStorage.set('letterboxd_username', data.user.username);
-        if (data.user.tmdb_key) await MBMRStorage.set('tmdb_key', data.user.tmdb_key);
-        if (data.user.gemini_key) await MBMRStorage.set('gemini_key', data.user.gemini_key);
 
         const syncInput = document.getElementById('sync-user-input');
         if (syncInput) syncInput.value = data.user.username;
 
-        closeOnboardingModal();
+        // Clear previous user cache
+        localStorage.removeItem('mbmr_cached_watchlist');
+        localStorage.removeItem('mbmr_cached_diary');
+        localStorage.setItem('mbmr_cached_user', data.user.username);
+        watchlistCache.clear();
+        diaryCache.clear();
+
+        // Fetch fresh data before closing modal
         await loadStatus();
         await loadWatchlistIds();
         await fetchWatchlist();
+        if (typeof fetchDiary === 'function') fetchDiary();
         generateRecommendations();
+        closeOnboardingModal();
     } catch(e) {
         if (errEl) { errEl.textContent = 'Connection error. Please try again.'; errEl.style.display = 'block'; }
+    }
+}
+
+function updateGeminiNotice() {
+    const geminiInput = document.getElementById('onboard-gemini');
+    const callout = document.getElementById('gemini-status-callout');
+    if (!callout) return;
+    const val = (geminiInput?.value || '').trim();
+    if (val) {
+        callout.style.background = 'rgba(34, 197, 94, 0.08)';
+        callout.style.border = '1px solid rgba(34, 197, 94, 0.25)';
+        callout.style.color = '#4ade80';
+        callout.innerHTML = `
+            <strong style="display:block; margin-bottom:2px; color:#86efac;">✦ Gemini AI Active:</strong>
+            <span>Full conversational mood search, personalized 1-sentence movie pitches, and deep watchlist matching are all unlocked!</span>
+        `;
+    } else {
+        callout.style.background = 'rgba(234, 179, 8, 0.08)';
+        callout.style.border = '1px solid rgba(234, 179, 8, 0.25)';
+        callout.style.color = '#facc15';
+        callout.innerHTML = `
+            <strong style="display:block; margin-bottom:4px; color:#fef08a;">ℹ️ No Gemini Key? No problem!</strong>
+            <span>Your taste profile & star ratings will still work 100% using our built-in offline model.</span>
+            <div style="margin-top:6px; font-weight:600; color:#fde047;">What you miss without Gemini:</div>
+            <ul style="margin:3px 0 0 16px; padding:0; color:#fef08a;">
+                <li><strong>Mood Search:</strong> Works best with simple words (e.g. <em>horror</em>, <em>sci-fi</em>) instead of complex sentences (e.g. <em>"dark moody rainy cyberpunk"</em>).</li>
+                <li><strong>Movie Pitches:</strong> Shows standard summaries instead of personalized 1-sentence AI vibe pitches.</li>
+                <li><strong>Watchlist Matching:</strong> Matches saved movies by genre rather than subtle story themes.</li>
+            </ul>
+        `;
     }
 }
 
@@ -1512,13 +1588,26 @@ async function completeOnboarding() {
 
     if (!username) {
         alert('Please provide your Letterboxd username.');
+        nextOnboardStep(1);
+        document.getElementById('onboard-username')?.focus();
+        return;
+    }
+
+    if (!pin || pin.length < 4) {
+        alert('Please create a 4-6 digit PIN (required to secure your profile and log in across devices).');
+        nextOnboardStep(1);
+        document.getElementById('onboard-pin')?.focus();
+        return;
+    }
+
+    if (!tmdb) {
+        alert('TMDB API Key is required to fetch movie posters, metadata, and cast. Please enter your free TMDB API key (get one free at themoviedb.org).');
+        document.getElementById('onboard-tmdb')?.focus();
         return;
     }
 
     // Save locally
     await MBMRStorage.set('letterboxd_username', username);
-    if (tmdb) await MBMRStorage.set('tmdb_key', tmdb);
-    if (gemini) await MBMRStorage.set('gemini_key', gemini);
 
     const s2 = document.getElementById('onboard-step-2');
     const sp = document.getElementById('onboard-progress');
@@ -1560,15 +1649,29 @@ async function completeOnboarding() {
                     clearInterval(pollInterval);
                     if (pFill) pFill.style.width = '100%';
                     if (pPct) pPct.textContent = '100%';
-                    setTimeout(async () => {
+                    if (pTitle) pTitle.textContent = 'Profile Ready!';
+                    if (pSub) pSub.textContent = 'Launching your personalized dashboard...';
+
+                    const syncInput = document.getElementById('sync-user-input');
+                    if (syncInput) syncInput.value = username;
+
+                    // Clear previous user cache
+                    localStorage.removeItem('mbmr_cached_watchlist');
+                    localStorage.removeItem('mbmr_cached_diary');
+                    localStorage.setItem('mbmr_cached_user', username);
+                    watchlistCache.clear();
+                    diaryCache.clear();
+
+                    // Fetch and render new data FIRST while progress modal is still displayed
+                    await loadStatus();
+                    await loadWatchlistIds();
+                    await fetchWatchlist();
+                    if (typeof fetchDiary === 'function') fetchDiary();
+                    generateRecommendations();
+
+                    setTimeout(() => {
                         closeOnboardingModal();
-                        const syncInput = document.getElementById('sync-user-input');
-                        if (syncInput) syncInput.value = username;
-                        await loadStatus();
-                        await loadWatchlistIds();
-                        await fetchWatchlist();
-                        generateRecommendations();
-                    }, 800);
+                    }, 400);
                 } else if (statusData.status === 'failed') {
                     clearInterval(pollInterval);
                     alert(statusData.error || 'Onboarding encountered an issue.');

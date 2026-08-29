@@ -281,6 +281,12 @@
                 <div class="sp-match-row">
                     <span class="sp-match-badge"><span class="sp-match-glyph">✦</span> <span id="spotlight-ai-score">98% Match</span></span>
                 </div>
+                <div id="spotlight-vibe-box" class="sp-vibe-box" style="display:none;">
+                    <div class="sp-vibe-header">
+                        <span class="sp-vibe-tag">✦ AI Vibe Match</span>
+                    </div>
+                    <p id="spotlight-vibe-pitch" class="sp-vibe-text"></p>
+                </div>
                 <p id="spotlight-overview" class="sp-overview">Synopsis...</p>
                 <div class="sp-section">
                     <span class="sp-section-label">STREAMING ON</span>
@@ -451,8 +457,8 @@
                             <input id="onboard-username" type="text" class="sync-user-field" placeholder="your_letterboxd_username" value="">
                         </div>
                         <div class="onboard-field" style="margin-bottom:12px;">
-                            <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Profile PIN (4-6 Digits)</label>
-                            <input id="onboard-pin" type="password" maxlength="6" class="onboard-input" placeholder="Create a PIN to access from phone or other devices">
+                            <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Profile PIN (4-6 Digits) <span style="color:var(--accent); font-weight:700;">* Required</span></label>
+                            <input id="onboard-pin" type="password" maxlength="6" class="onboard-input" placeholder="Create a 4-6 digit PIN (required for multi-device login)">
                         </div>
 
                         <div class="onboard-or-divider" style="display:flex;align-items:center;gap:8px;margin:12px 0 8px;color:var(--text3);font-size:10px;font-weight:700;">
@@ -477,8 +483,8 @@
                             <input id="login-username" type="text" class="sync-user-field" placeholder="your_letterboxd_username" value="">
                         </div>
                         <div class="onboard-field" style="margin-bottom:16px;">
-                            <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Your 4-6 Digit PIN</label>
-                            <input id="login-pin" type="password" maxlength="6" class="onboard-input" placeholder="Enter your PIN">
+                            <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Your 4-6 Digit PIN <span style="color:var(--accent); font-weight:700;">* Required</span></label>
+                            <input id="login-pin" type="password" maxlength="6" class="onboard-input" placeholder="Enter your 4-6 digit PIN">
                         </div>
                         <div id="login-error-msg" style="color:#ef4444;font-size:12px;margin-bottom:10px;display:none;"></div>
                         <button class="sp-btn primary" style="width:100%;" onclick="submitLoginProfile()">Log In to Profile ✦</button>
@@ -493,18 +499,30 @@
                     
                     <div class="onboard-field">
                         <div class="onboard-label-row">
-                            <label>TMDB API Key (Free)</label>
-                            <a href="https://www.themoviedb.org/settings/api" target="_blank" class="onboard-link">Get Key ↗</a>
+                            <label>TMDB API Key <span style="color:var(--accent); font-weight:700;">* Required</span></label>
+                            <a href="https://www.themoviedb.org/settings/api" target="_blank" class="onboard-link">Get Free Key ↗</a>
                         </div>
-                        <input id="onboard-tmdb" type="password" class="onboard-input" placeholder="Enter TMDB API Key (optional if server configured)">
+                        <input id="onboard-tmdb" type="password" class="onboard-input" placeholder="Enter your TMDB API Key (Required for posters, cast, ratings)">
                     </div>
 
-                    <div class="onboard-field" style="margin-top:10px;">
+                    <div class="onboard-field" style="margin-top:12px;">
                         <div class="onboard-label-row">
-                            <label>Google Gemini Key (Free AI Vibe Engine)</label>
-                            <a href="https://aistudio.google.com/" target="_blank" class="onboard-link">Get Key ↗</a>
+                            <label>Google Gemini Key <span style="color:var(--text3); font-weight:500;">(Optional)</span></label>
+                            <a href="https://aistudio.google.com/" target="_blank" class="onboard-link">Get Free Key ↗</a>
                         </div>
-                        <input id="onboard-gemini" type="password" class="onboard-input" placeholder="Enter Gemini Key (optional if server configured)">
+                        <input id="onboard-gemini" type="password" class="onboard-input" placeholder="Enter Gemini Key (or leave blank for In-Built Model)" oninput="updateGeminiNotice()">
+                    </div>
+
+                    <!-- Informative Drawbacks Notice for No Gemini Key -->
+                    <div id="gemini-status-callout" style="margin-top:12px; padding:10px 12px; border-radius:8px; font-size:11px; line-height:1.45; background:rgba(234, 179, 8, 0.08); border:1px solid rgba(234, 179, 8, 0.25); color:#facc15;">
+                        <strong style="display:block; margin-bottom:4px; color:#fef08a;">ℹ️ No Gemini Key? No problem!</strong>
+                        <span>Your taste profile & star ratings will still work 100% using our built-in offline model.</span>
+                        <div style="margin-top:6px; font-weight:600; color:#fde047;">What you miss without Gemini:</div>
+                        <ul style="margin:3px 0 0 16px; padding:0; color:#fef08a;">
+                            <li><strong>Mood Search:</strong> Works best with simple words (e.g. <em>horror</em>, <em>sci-fi</em>) instead of complex sentences (e.g. <em>"dark moody rainy cyberpunk"</em>).</li>
+                            <li><strong>Movie Pitches:</strong> Shows standard summaries instead of personalized 1-sentence AI vibe pitches.</li>
+                            <li><strong>Watchlist Matching:</strong> Matches saved movies by genre rather than subtle story themes.</li>
+                        </ul>
                     </div>
 
                     <div style="display:flex;gap:10px;margin-top:16px;">

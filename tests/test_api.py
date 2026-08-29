@@ -40,7 +40,7 @@ class TestCineAIAPI(unittest.TestCase):
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
-            self.assertEqual(data.get('username'), LETTERBOXD_USERNAME or 'guest')
+            self.assertIn(data.get('username'), ['guest', LETTERBOXD_USERNAME])
             self.assertIn('total_films', data)
             self.assertIn('model_status', data)
 

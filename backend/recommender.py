@@ -178,7 +178,7 @@ def _is_strong_title_match(norm_query, norm_title):
     return False
 
 
-def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders, user_context="Alone", streaming_filter="All Platforms", raw_prompt="", source="all", username=None, tmdb_key=None):
+def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders, user_context="Alone", streaming_filter="All Platforms", raw_prompt="", source="all", username=None, tmdb_key=None, gemini_key=None):
     """
     Finds candidates matching direct movie name, query/mood, or similar films,
     scores candidates using personal AI model, and returns curated recommendations.
@@ -205,88 +205,99 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     idToGenre = {v: k for k, v in genreDict.items()}
     
     if source == "watchlist" and username:
-        from backend.db import get_user_watchlist
+        from backend.db import get_user_watchlist, get_user_taste_anchors
+        from backend.gemini_client import filter_and_rank_watchlist_with_ai
+        
         wl_movies = get_user_watchlist(username)
         if not wl_movies:
             return []
-            
-        desiredGenres = ai_analysis.get('genres', [])
-        search_query = (ai_analysis.get('search_query') or '').strip().lower()
-        suggested_titles = [titleNormalize(t) for t in ai_analysis.get('suggested_titles', []) if t]
-        
+
+        taste_anchors = None
+        try:
+            taste_anchors = get_user_taste_anchors(username)
+        except Exception:
+            pass
+
+        prompt_lower = (raw_prompt or '').lower()
+        genre_keywords = {
+            'horror': 'Horror', 'scary': 'Horror', 'slasher': 'Horror',
+            'comedy': 'Comedy', 'funny': 'Comedy', 'hilarious': 'Comedy',
+            'thriller': 'Thriller', 'tense': 'Thriller', 'suspense': 'Thriller',
+            'sci-fi': 'Science Fiction', 'scifi': 'Science Fiction',
+            'action': 'Action', 'drama': 'Drama', 'romance': 'Romance',
+            'mystery': 'Mystery', 'crime': 'Crime', 'animation': 'Animation',
+            'fantasy': 'Fantasy', 'western': 'Western', 'documentary': 'Documentary'
+        }
+        explicit_target_genres = {g for kw, g in genre_keywords.items() if kw in prompt_lower}
+
+        ai_matches = filter_and_rank_watchlist_with_ai(
+            raw_prompt, wl_movies, custom_api_key=gemini_key, taste_context=taste_anchors
+        )
+
         candidates = []
         for m in wl_movies:
+            m_id = int(m.get('movie_id') or m.get('id') or 0)
             m_genres = [g.strip() for g in str(m.get('genres', '')).split(',') if g.strip()]
-            m_title = str(m.get('title') or '').strip()
+            m_overview = str(m.get('overview', ''))
+            m_title = str(m.get('title', ''))
             m_norm_title = titleNormalize(m_title)
-            m_director = str(m.get('director') or '').strip().lower()
-            m_overview = str(m.get('overview') or '').strip().lower()
-            
-            genre_match = False
-            if desiredGenres:
-                genre_match = any(g in m_genres for g in desiredGenres)
+
+            # Retrieve AI thematic match data
+            match_data = ai_matches.get(m_id)
+            if match_data:
+                thematic_rel = match_data.get('relevance', 0.6)
+                vibe_pitch = match_data.get('vibe_pitch', '')
             else:
-                genre_match = True
-                
-            query_match = False
-            if search_query:
-                query_match = (
-                    search_query in m_title.lower() or 
-                    search_query in m_director or 
-                    search_query in m_overview or
-                    any(search_query in g.lower() for g in m_genres)
-                )
-            else:
-                query_match = True
-                
-            title_match = False
-            if suggested_titles:
-                title_match = m_norm_title in suggested_titles
-            else:
-                title_match = True
-                
-            is_match = False
-            if not desiredGenres and not search_query and not suggested_titles:
-                is_match = True
-            else:
-                is_match = (
-                    (desiredGenres and genre_match) or 
-                    (search_query and query_match) or 
-                    (suggested_titles and title_match)
-                )
-                
-            if is_match:
-                candidates.append(m)
-                
-        if not candidates:
-            candidates = wl_movies
-            
-        final_picks = []
-        for m in candidates:
-            m_genres = [g.strip() for g in str(m.get('genres', '')).split(',') if g.strip()]
-            m_overview = m.get('overview', '')
-            m_title = m.get('title', '')
-            m_norm_title = titleNormalize(m_title)
-            
+                thematic_rel = 0.15 if ai_matches else 0.50
+                vibe_pitch = ''
+
+            # If query explicitly asked for specific genres, enforce genre alignment
+            if explicit_target_genres:
+                m_genres_lower = [g.lower() for g in m_genres]
+                has_genre_match = any(tg.lower() in m_genres_lower for tg in explicit_target_genres)
+                if has_genre_match:
+                    thematic_rel = min(1.0, thematic_rel + 0.15)
+                else:
+                    thematic_rel = max(0.10, thematic_rel - 0.40)
+
+            # Predict baseline personal likeness score
             if ai_model:
-                score = predict_movie_score(
+                base_score = predict_movie_score(
                     ai_model, ai_columns, ai_vectorizer, ai_encoders,
                     genres=m_genres, context=user_context, overview=m_overview,
                     runtime=m.get('runtime')
                 )
                 for hated in hated_movies:
                     if (hated in m_norm_title) or (m_norm_title in hated):
-                        score = max(0.5, score - 2.5)
+                        base_score = max(0.5, base_score - 2.5)
                         break
-                m['ai_score'] = score
             else:
-                m['ai_score'] = 3.5
-                
-            m['id'] = m.get('movie_id')
-            m['is_direct_match'] = False
-            m['is_watched'] = False
-            final_picks.append(m)
-            
+                base_score = 3.8
+
+            multiplier = 0.30 + (0.75 * thematic_rel)
+            if thematic_rel >= 0.85:
+                multiplier += 0.10
+            final_ai_score = round(min(5.0, max(0.5, base_score * multiplier)), 2)
+
+            m_copy = dict(m)
+            m_copy['id'] = m_id
+            m_copy['movie_id'] = m_id
+            m_copy['ai_score'] = final_ai_score
+            m_copy['thematic_relevance'] = thematic_rel
+            m_copy['vibe_pitch'] = vibe_pitch
+            m_copy['is_direct_match'] = thematic_rel >= 0.80
+            m_copy['is_watched'] = False
+
+            if not ai_matches or thematic_rel >= 0.35:
+                candidates.append(m_copy)
+
+        if not candidates:
+            for m in wl_movies:
+                m_copy = dict(m)
+                m_copy['id'] = m.get('movie_id')
+                m_copy['ai_score'] = 3.5
+                candidates.append(m_copy)
+
         if streaming_filter != "All Platforms":
             def check_stream(m):
                 provs = get_watch_providers(m.get('id'), tmdb_key=active_tmdb)
@@ -294,12 +305,12 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                     m['providers'] = provs
                     return m
                 return None
-                
+
             with ThreadPoolExecutor(max_workers=8) as executor:
-                final_picks = [m for m in executor.map(check_stream, final_picks) if m]
-                
-        final_picks.sort(key=lambda x: x.get('ai_score', 0), reverse=True)
-        return final_picks
+                candidates = [m for m in executor.map(check_stream, candidates) if m]
+
+        candidates.sort(key=lambda x: (x.get('thematic_relevance', 0), x.get('ai_score', 0)), reverse=True)
+        return candidates
 
     direct_matches = []
     results = []
@@ -374,19 +385,41 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     # 2. Suggested Titles from Gemini (concurrent lookup with high thematic priority)
     suggested_titles = ai_analysis.get('suggested_titles', [])
     if suggested_titles and active_tmdb:
-        def fetch_title(t):
+        def fetch_title(item):
+            if isinstance(item, dict):
+                t = item.get('title', '')
+                year_hint = item.get('year', '')
+                pitch = item.get('vibe_pitch', '')
+            else:
+                t = str(item)
+                year_hint = ''
+                pitch = ''
+            if not t:
+                return None
+
             try:
-                resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': t}, timeout=5).json()
+                params = {'api_key': active_tmdb, 'query': t}
+                if year_hint and str(year_hint).isdigit() and len(str(year_hint)) == 4:
+                    params['year'] = year_hint
+                resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=5).json()
                 m_list = resp.get('results', []) if isinstance(resp, dict) else []
+                if not m_list and 'year' in params:
+                    # Retry without year restriction in case year slightly differs
+                    resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': t}, timeout=5).json()
+                    m_list = resp.get('results', []) if isinstance(resp, dict) else []
+
                 if m_list:
                     m = m_list[0]
                     m['thematic_match'] = True
                     m['thematic_weight'] = 1.15
+                    if pitch:
+                        m['vibe_pitch'] = pitch
                     return m
                 return None
-            except Exception: return None
+            except Exception:
+                return None
             
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             for res in executor.map(fetch_title, suggested_titles):
                 if res and res.get('id') and res.get('id') not in seen_ids:
                     seen_ids.add(res.get('id'))
