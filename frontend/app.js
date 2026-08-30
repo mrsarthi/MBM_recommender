@@ -1239,7 +1239,7 @@ async function searchTMDBLog(q) {
     const dd = document.getElementById('log-search-dropdown');
     if (!q || q.length < 2) { dd.style.display = 'none'; return; }
     try {
-        const d = await (await fetch(`${API}/api/search_tmdb?q=${encodeURIComponent(q)}`)).json();
+        const d = await (await mbmrFetch(`${API}/api/search_tmdb?q=${encodeURIComponent(q)}`)).json();
         dd.innerHTML = '';
         if (d.results?.length) {
             dd.style.display = 'block';

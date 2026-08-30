@@ -730,15 +730,68 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            # Multi-tier search: movie search + multi search fallback
-            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': tmdb_key, 'query': q}, timeout=6).json()
+            # 1. Direct TMDB URL or numeric ID lookup
+            url_m = re.search(r'themoviedb\.org/movie/(\d+)', q)
+            if url_m or (q.isdigit() and len(q) >= 2):
+                movie_id = url_m.group(1) if url_m else q
+                try:
+                    m_resp = http_session.get(f"{TMDB_BASE_URL}/movie/{movie_id}", params={'api_key': tmdb_key}, timeout=6).json()
+                    if isinstance(m_resp, dict) and m_resp.get('id'):
+                        clean_results = [{
+                            'id': m_resp.get('id'),
+                            'movie_id': m_resp.get('id'),
+                            'title': str(m_resp.get('title') or m_resp.get('name') or 'Untitled'),
+                            'release_date': str(m_resp.get('release_date') or ''),
+                            'poster_path': str(m_resp.get('poster_path') or ''),
+                            'backdrop_path': str(m_resp.get('backdrop_path') or ''),
+                            'overview': str(m_resp.get('overview') or ''),
+                            'vote_average': float(m_resp.get('vote_average') or 7.0),
+                            'genre_ids': [g['id'] for g in m_resp.get('genres', []) if 'id' in g]
+                        }]
+                        self._send_json({'results': clean_results})
+                        return
+                except Exception as e:
+                    print(f"[WARN] direct TMDB movie ID lookup failed: {e}")
+
+            # 2. Extract year if user typed "Title 1996" or "Title (1996)"
+            year = None
+            clean_q = q
+            year_m = re.search(r'^(.*?)\s*\(?(\b(?:19|20)\d\d\b)\)?$', q)
+            if year_m:
+                clean_q = year_m.group(1).strip()
+                year = year_m.group(2).strip()
+
+            params = {'api_key': tmdb_key, 'query': clean_q}
+            if year:
+                params['primary_release_year'] = year
+
+            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=6).json()
             raw_results = resp.get('results', []) if isinstance(resp, dict) else []
+
+            # If no results with year filter, retry without primary_release_year
+            if not raw_results and year:
+                params.pop('primary_release_year', None)
+                resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=6).json()
+                raw_results = resp.get('results', []) if isinstance(resp, dict) else []
+
             if not raw_results:
-                resp2 = http_session.get(f"{TMDB_BASE_URL}/search/multi", params={'api_key': tmdb_key, 'query': q}, timeout=6).json()
+                resp2 = http_session.get(f"{TMDB_BASE_URL}/search/multi", params={'api_key': tmdb_key, 'query': clean_q}, timeout=6).json()
                 raw_results = [m for m in resp2.get('results', []) if m.get('media_type') != 'person'] if isinstance(resp2, dict) else []
 
+            # 3. Exact title matching boost
+            def _search_rank(m):
+                m_title = (m.get('title') or m.get('name') or '').lower().strip()
+                cq = clean_q.lower().strip()
+                if m_title == cq:
+                    return -1000.0 # Exact title match has highest priority
+                if m_title.startswith(cq):
+                    return -500.0 # Prefix match
+                return -float(m.get('popularity') or 0.0)
+
+            raw_results.sort(key=_search_rank)
+
             clean_results = []
-            for m in raw_results[:15]:
+            for m in raw_results[:20]:
                 clean_results.append({
                     'id': m.get('id'),
                     'movie_id': m.get('id'),
@@ -747,7 +800,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                     'poster_path': str(m.get('poster_path') or ''),
                     'backdrop_path': str(m.get('backdrop_path') or ''),
                     'overview': str(m.get('overview') or ''),
-                    'vote_average': float(m.get('vote_average') or 7.0)
+                    'vote_average': float(m.get('vote_average') or 7.0),
+                    'genre_ids': m.get('genre_ids', [])
                 })
             self._send_json({'results': clean_results})
         except Exception as e:
