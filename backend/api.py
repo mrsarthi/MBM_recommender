@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import json
 import threading
 import time
@@ -724,7 +725,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
     def _handle_search_tmdb(self, query):
         q = query.get('q', [''])[0].strip()
         user = self._get_request_user(query)
-        tmdb_key, _ = self._get_request_keys(user=user, query=query, allow_env_fallback=False)
+        tmdb_key, _ = self._get_request_keys(user=user, query=query, allow_env_fallback=True)
         if not q or not tmdb_key:
             self._send_json({'results': [], 'error': 'TMDB API key is required'})
             return
