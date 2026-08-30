@@ -11,11 +11,17 @@ let currentPicks = [];
 let currentSpotlight = null;
 let selectedLogMovie = null;
 let watchlistIds = new Set();
+let diaryMap = new Map(); // movie_id -> { rating, watched_date }
+let diaryTitles = new Map(); // normalized_title -> { rating, watched_date }
 let currentMatchmakerWinner = null;
 let currentWatchlistCluster = 'All';
 let discoverMode = 'search';
 let currentView = 'watchlist';
 let renderedMoviesMap = new Map();
+
+function normalizeMovieTitle(t) {
+    return (t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
 
 // ── In-Memory Fast Caches (Instant 0ms Tab Switching) ──
 const watchlistCache = new Map();
@@ -124,6 +130,15 @@ async function hydrateFromStorage() {
             const d = JSON.parse(cachedDiary);
             if (d && d.films && d.films.length > 0) {
                 currentDiaryFilms = d.films;
+                d.films.forEach(f => {
+                    const info = {
+                        rating: f.Rating || f.rating || null,
+                        watched_date: f.Date || f.watched_date || ''
+                    };
+                    if (f.movie_id) diaryMap.set(Number(f.movie_id), info);
+                    const nTitle = normalizeMovieTitle(f.title || f.Name);
+                    if (nTitle) diaryTitles.set(nTitle, info);
+                });
                 renderJournal(d.films);
                 if (d.total) {
                     const jCount = document.getElementById('journal-total-count');
@@ -134,6 +149,43 @@ async function hydrateFromStorage() {
             }
         }
     } catch(e) {}
+}
+
+async function loadUserDataSets() {
+    try {
+        const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+        if (!username) return;
+
+        // 1. Load Watchlist IDs
+        const wlRes = await fetch(`${API}/api/watchlist?cluster=All&sort=Highest Predicted ★&platform=All Platforms`);
+        const wlData = await wlRes.json();
+        if (wlData && wlData.watchlist) {
+            watchlistIds = new Set(wlData.watchlist.map(m => m.id || m.movie_id));
+            updateWatchlistBadge(wlData.total !== undefined ? wlData.total : watchlistIds.size);
+        }
+
+        // 2. Load Diary IDs & Titles
+        const diaryRes = await fetch(`${API}/api/diary?rating=All&sort=Newest Log First`);
+        const diaryData = await diaryRes.json();
+        if (diaryData && diaryData.films) {
+            diaryMap.clear();
+            diaryTitles.clear();
+            diaryData.films.forEach(f => {
+                const info = {
+                    rating: f.Rating || f.rating || null,
+                    watched_date: f.Date || f.watched_date || ''
+                };
+                if (f.movie_id) diaryMap.set(Number(f.movie_id), info);
+                const nTitle = normalizeMovieTitle(f.title || f.Name);
+                if (nTitle) diaryTitles.set(nTitle, info);
+            });
+        }
+    } catch (e) {
+        console.error("Error loading user datasets:", e);
+    }
+}
+function loadWatchlistIds() {
+    return loadUserDataSets();
 }
 
 // ── Init ──
@@ -450,23 +502,30 @@ function renderGrid(movies, limit = 21) {
         const pct = Math.min(99, Math.max(60, Math.round((m.ai_score || 3.5) * 20)));
         const isSaved = watchlistIds.has(m.id);
 
+        const mNorm = normalizeMovieTitle(m.title);
+        const isWatched = m.is_watched || diaryMap.has(Number(m.id)) || (mNorm && diaryTitles.has(mNorm));
+        const watchedInfo = diaryMap.get(Number(m.id)) || (mNorm ? diaryTitles.get(mNorm) : null);
+        const userRating = watchedInfo?.rating ? parseFloat(watchedInfo.rating).toFixed(1) : (m.user_rating ? parseFloat(m.user_rating).toFixed(1) : null);
+
         let badgeClass = 'poster-badge';
         let badgeText = `✦ ${pct}%`;
-        if (m.is_direct_match) {
-            if (m.is_watched) {
-                badgeClass = 'poster-badge in-diary';
-                badgeText = `👁️ ${pct}%`;
-            } else {
-                badgeClass = 'poster-badge direct-match';
-                badgeText = `🎯 ${pct}%`;
-            }
+        if (isWatched) {
+            badgeClass = 'poster-badge in-diary';
+            badgeText = userRating ? `★ ${userRating} Seen` : `👁️ Seen`;
+        } else if (m.is_direct_match) {
+            badgeClass = 'poster-badge direct-match';
+            badgeText = `🎯 ${pct}%`;
         }
+
+        const diaryBtnClass = isWatched ? 'wl-act-btn diary-add in-diary' : 'wl-act-btn diary-add';
+        const diaryBtnTitle = isWatched ? `Logged in Diary (${userRating ? userRating + '★' : 'Watched'})` : 'Rate & Log Film';
+        const diaryBtnIcon = isWatched ? (userRating ? `★${userRating}` : '✓') : '👁️';
 
         card.innerHTML = `
             ${poster ? `<img src="${poster}" alt="${m.title}" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
             <div class="wl-card-actions" onclick="event.stopPropagation()">
-                <button class="wl-act-btn diary-add" title="Rate & Log Film" onclick="openLogForMovieFromCardId(${m.id})">
-                    👁️
+                <button class="${diaryBtnClass}" title="${diaryBtnTitle}" onclick="openLogForMovieFromCardId(${m.id})">
+                    ${diaryBtnIcon}
                 </button>
                 <button class="wl-act-btn bookmark-add ${isSaved ? 'in-watchlist' : ''}" title="${isSaved ? 'In Watchlist' : 'Add to Watchlist'}" onclick="toggleWatchlistFromCardId(${m.id}, this)">
                     ${isSaved ? '✓' : '🔖'}
@@ -475,7 +534,7 @@ function renderGrid(movies, limit = 21) {
             <span class="${badgeClass}">${badgeText}</span>
             <div class="poster-info">
                 <div class="poster-name">${m.title}</div>
-                <div class="poster-sub">${m.is_direct_match ? 'Direct Match · ' : 'Match: ' + pct + '%'}${year ? ' · ' + year : ''}</div>
+                <div class="poster-sub">${isWatched ? (userRating ? `Watched · ★ ${userRating}` : 'Watched') : (m.is_direct_match ? 'Direct Match · ' : 'Match: ' + pct + '%')}${year ? ' · ' + year : ''}</div>
             </div>
         `;
         grid.appendChild(card);
@@ -933,6 +992,15 @@ async function fetchDiary(resetPage = true) {
             try { localStorage.setItem('mbmr_cached_diary', JSON.stringify(d)); } catch(e) {}
         }
         currentDiaryFilms = d.films || [];
+        currentDiaryFilms.forEach(f => {
+            const info = {
+                rating: f.Rating || f.rating || null,
+                watched_date: f.Date || f.watched_date || ''
+            };
+            if (f.movie_id) diaryMap.set(Number(f.movie_id), info);
+            const nTitle = normalizeMovieTitle(f.title || f.Name);
+            if (nTitle) diaryTitles.set(nTitle, info);
+        });
         renderJournal(currentDiaryFilms);
         if (d.total) { 
             const jCount = document.getElementById('journal-total-count');
@@ -1317,6 +1385,10 @@ async function submitLogMovie() {
         closeLogModal(); 
         closeSpotlight();
         
+        const loggedInfo = { rating: ratingVal, watched_date: watchedDateVal };
+        if (mId) diaryMap.set(Number(mId), loggedInfo);
+        if (selectedLogMovie?.title) diaryTitles.set(normalizeMovieTitle(selectedLogMovie.title), loggedInfo);
+        
         watchlistIds.delete(mId);
         watchlistCache.clear();
         diaryCache.clear();
@@ -1326,7 +1398,7 @@ async function submitLogMovie() {
         
         if (currentView === 'watchlist') fetchWatchlist();
         if (currentView === 'journal') fetchDiary();
-        if (currentView === 'discover') generateRecommendations();
+        if (currentView === 'discover') renderGrid(currentPicks);
         
         showToast(d.message || `Logged "${selectedLogMovie.title}" (${ratingVal}★) to Diary!`);
         selectedLogMovie = null;

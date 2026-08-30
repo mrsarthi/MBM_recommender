@@ -503,7 +503,14 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                             seen_ids.add(m.get('id'))
                             results.append(m)
 
-    # Filter recommendations by watched (keep direct matches even if watched so user can inspect/log them)
+    # Filter recommendations: never recommend films the user has already watched / logged
+    unwatched_directs = []
+    for movie in direct_matches:
+        m_id = movie.get('id')
+        title_norm = titleNormalize(movie.get('title', ''))
+        if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids):
+            unwatched_directs.append(movie)
+
     unwatched_results = []
     for movie in results:
         m_id = movie.get('id')
@@ -511,7 +518,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
         if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids):
             unwatched_results.append(movie)
 
-    all_candidates = direct_matches + unwatched_results
+    all_candidates = unwatched_directs + unwatched_results
 
     # If specific streaming platform filter is set, query concurrently
     if streaming_filter != "All Platforms" and all_candidates:
