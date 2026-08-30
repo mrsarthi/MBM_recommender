@@ -1477,12 +1477,15 @@ function switchOnboardTab(tab) {
 function nextOnboardStep(step) {
     const s1 = document.getElementById('onboard-step-1');
     const s2 = document.getElementById('onboard-step-2');
+    const s2Letterboxd = document.getElementById('onboard-step2-letterboxd');
+    const s2Favorites = document.getElementById('onboard-step2-favorites');
     const u = document.getElementById('onboard-username')?.value.trim();
     const p = document.getElementById('onboard-pin')?.value.trim();
+    const tmdb = document.getElementById('onboard-tmdb')?.value.trim();
 
     if (step === 2) {
         if (!u) {
-            alert('Please enter your Letterboxd username.');
+            alert(isLetterboxdFallbackActive ? 'Please choose a profile username.' : 'Please enter your Letterboxd username.');
             document.getElementById('onboard-username')?.focus();
             return;
         }
@@ -1491,8 +1494,22 @@ function nextOnboardStep(step) {
             document.getElementById('onboard-pin')?.focus();
             return;
         }
+        if (!tmdb) {
+            alert('TMDB API Key is required to search movies, fetch posters, and sync metadata. Please enter your TMDB key.');
+            document.getElementById('onboard-tmdb')?.focus();
+            return;
+        }
         if (s1) s1.style.display = 'none';
         if (s2) s2.style.display = 'block';
+
+        if (isLetterboxdFallbackActive) {
+            if (s2Letterboxd) s2Letterboxd.style.display = 'none';
+            if (s2Favorites) s2Favorites.style.display = 'block';
+            setTimeout(() => document.getElementById('onboard-movie-search')?.focus(), 100);
+        } else {
+            if (s2Letterboxd) s2Letterboxd.style.display = 'block';
+            if (s2Favorites) s2Favorites.style.display = 'none';
+        }
     } else if (step === 1) {
         if (s2) s2.style.display = 'none';
         if (s1) s1.style.display = 'block';
@@ -1587,7 +1604,7 @@ async function completeOnboarding() {
     const gemini = document.getElementById('onboard-gemini')?.value.trim();
 
     if (!username) {
-        alert('Please provide your Letterboxd username.');
+        alert(isLetterboxdFallbackActive ? 'Please choose a profile username.' : 'Please provide your Letterboxd username.');
         nextOnboardStep(1);
         document.getElementById('onboard-username')?.focus();
         return;
@@ -1602,7 +1619,14 @@ async function completeOnboarding() {
 
     if (!tmdb) {
         alert('TMDB API Key is required to fetch movie posters, metadata, and cast. Please enter your free TMDB API key (get one free at themoviedb.org).');
+        nextOnboardStep(1);
         document.getElementById('onboard-tmdb')?.focus();
+        return;
+    }
+
+    if (isLetterboxdFallbackActive && fallbackSelectedMovies.length < 3) {
+        alert('Please select at least 3 favorite movies so we can calibrate your taste profile.');
+        document.getElementById('onboard-movie-search')?.focus();
         return;
     }
 
@@ -1624,7 +1648,14 @@ async function completeOnboarding() {
         const startRes = await fetch(`${API}/api/onboarding/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, pin, tmdb_key: tmdb, gemini_key: gemini })
+            body: JSON.stringify({ 
+                username, 
+                pin, 
+                tmdb_key: tmdb, 
+                gemini_key: gemini,
+                skip_scrape: isLetterboxdFallbackActive,
+                favorites: isLetterboxdFallbackActive ? fallbackSelectedMovies : []
+            })
         });
         const startData = await startRes.json();
         if (!startData.success || !startData.job_id) {
@@ -1807,6 +1838,152 @@ async function handleSyncCSVSelected(event) {
         }
     };
     reader.readAsText(file);
+}
+
+let isLetterboxdFallbackActive = false;
+let fallbackSelectedMovies = [];
+let fallbackSearchTimer = null;
+
+function searchFallbackMovies(q) {
+    clearTimeout(fallbackSearchTimer);
+    const resultsDiv = document.getElementById('onboard-movie-search-results');
+    if (!q || q.trim().length < 2) {
+        if (resultsDiv) resultsDiv.style.display = 'none';
+        return;
+    }
+
+    fallbackSearchTimer = setTimeout(async () => {
+        try {
+            const tmdbKey = document.getElementById('onboard-tmdb')?.value.trim();
+            const res = await fetch(`${API}/api/search_tmdb?q=${encodeURIComponent(q)}`, {
+                headers: {
+                    'X-TMDB-Key': tmdbKey || ''
+                }
+            });
+            const data = await res.json();
+            const results = data.results || [];
+            
+            if (resultsDiv) {
+                resultsDiv.innerHTML = '';
+                if (results.length === 0) {
+                    resultsDiv.innerHTML = '<div style="padding:10px;color:var(--text3);text-align:center;">No movies found on TMDB</div>';
+                } else {
+                    results.forEach(m => {
+                        const row = document.createElement('div');
+                        row.style.padding = '8px 12px';
+                        row.style.cursor = 'pointer';
+                        row.style.borderBottom = '1px solid var(--border)';
+                        row.style.display = 'flex';
+                        row.style.alignItems = 'center';
+                        row.style.gap = '10px';
+                        row.style.transition = 'background 0.15s ease';
+                        row.onmouseenter = () => row.style.background = 'var(--bg-hover)';
+                        row.onmouseleave = () => row.style.background = 'transparent';
+                        
+                        const img = document.createElement('img');
+                        img.src = m.poster_path ? `${IMG200}${m.poster_path}` : 'assets/favicon.png';
+                        img.style.width = '28px';
+                        img.style.height = '42px';
+                        img.style.borderRadius = '4px';
+                        img.style.objectFit = 'cover';
+                        
+                        const infoCol = document.createElement('div');
+                        infoCol.style.display = 'flex';
+                        infoCol.style.flexDirection = 'column';
+                        
+                        const text = document.createElement('span');
+                        const yearStr = m.release_date ? ` (${m.release_date.split('-')[0]})` : '';
+                        text.textContent = `${m.title}${yearStr}`;
+                        text.style.color = 'var(--text)';
+                        text.style.fontWeight = '500';
+                        
+                        infoCol.appendChild(text);
+                        row.appendChild(img);
+                        row.appendChild(infoCol);
+                        row.onclick = () => selectFallbackMovie(m);
+                        resultsDiv.appendChild(row);
+                    });
+                }
+                resultsDiv.style.display = 'block';
+            }
+        } catch (e) {
+            console.error("Fallback search error", e);
+        }
+    }, 200);
+}
+
+function selectFallbackMovie(m) {
+    const searchInput = document.getElementById('onboard-movie-search');
+    const resultsDiv = document.getElementById('onboard-movie-search-results');
+    if (searchInput) searchInput.value = '';
+    if (resultsDiv) resultsDiv.style.display = 'none';
+
+    if (fallbackSelectedMovies.some(x => x.id === m.id)) return;
+    
+    fallbackSelectedMovies.push(m);
+    renderSelectedFallbackMovies();
+}
+
+function renderSelectedFallbackMovies() {
+    const container = document.getElementById('onboard-selected-movies');
+    if (!container) return;
+    container.innerHTML = '';
+    
+    fallbackSelectedMovies.forEach(m => {
+        const badge = document.createElement('div');
+        badge.style.background = 'rgba(34, 197, 94, 0.1)';
+        badge.style.border = '1px solid rgba(34, 197, 94, 0.3)';
+        badge.style.color = '#22c55e';
+        badge.style.borderRadius = '20px';
+        badge.style.padding = '4px 10px';
+        badge.style.fontSize = '10px';
+        badge.style.fontWeight = '600';
+        badge.style.display = 'flex';
+        badge.style.alignItems = 'center';
+        badge.style.gap = '6px';
+        badge.style.marginTop = '4px';
+        
+        const titleSpan = document.createElement('span');
+        titleSpan.textContent = m.title;
+        
+        const removeBtn = document.createElement('span');
+        removeBtn.textContent = '✕';
+        removeBtn.style.cursor = 'pointer';
+        removeBtn.style.fontWeight = '700';
+        removeBtn.onclick = () => {
+            fallbackSelectedMovies = fallbackSelectedMovies.filter(x => x.id !== m.id);
+            renderSelectedFallbackMovies();
+        };
+        
+        badge.appendChild(titleSpan);
+        badge.appendChild(removeBtn);
+        container.appendChild(badge);
+    });
+}
+
+function toggleLetterboxdFallback(e) {
+    if (e) e.preventDefault();
+    isLetterboxdFallbackActive = !isLetterboxdFallbackActive;
+    
+    const atSpan = document.querySelector('.sync-at');
+    const usernameInput = document.getElementById('onboard-username');
+    const fallbackLink = document.querySelector('.onboard-fallback-link a');
+    
+    if (isLetterboxdFallbackActive) {
+        if (atSpan) atSpan.style.display = 'none';
+        if (usernameInput) {
+            usernameInput.placeholder = "Choose a Profile Username (e.g. movie_fan)";
+        }
+        if (fallbackLink) fallbackLink.textContent = "Or sync with Letterboxd instead";
+    } else {
+        if (atSpan) atSpan.style.display = 'block';
+        if (usernameInput) {
+            usernameInput.placeholder = "your_letterboxd_username";
+        }
+        if (fallbackLink) fallbackLink.textContent = "I don't have a Letterboxd account";
+        fallbackSelectedMovies = [];
+        renderSelectedFallbackMovies();
+    }
 }
 
 

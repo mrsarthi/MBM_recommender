@@ -75,7 +75,7 @@ def _prune_jobs():
         _jobs.pop(j, None)
 
 
-def start_onboarding_job(username, pin=None, tmdb_key=None, gemini_key=None):
+def start_onboarding_job(username, pin=None, tmdb_key=None, gemini_key=None, skip_scrape=False, favorites=None):
     clean_user = (username or '').strip().lstrip('@').lower()
     job_id = str(uuid.uuid4())
 
@@ -87,7 +87,7 @@ def start_onboarding_job(username, pin=None, tmdb_key=None, gemini_key=None):
             'status': 'running',
             'progress': 3,
             'stage': 'init',
-            'message': 'Connecting to Letterboxd...',
+            'message': 'Setting up profile...' if skip_scrape else 'Connecting to Letterboxd...',
             'error': None,
             'diary_count': 0,
             'watchlist_count': 0,
@@ -96,7 +96,7 @@ def start_onboarding_job(username, pin=None, tmdb_key=None, gemini_key=None):
 
     t = threading.Thread(
         target=_run_onboarding_pipeline,
-        args=(job_id, clean_user, pin, tmdb_key, gemini_key),
+        args=(job_id, clean_user, pin, tmdb_key, gemini_key, skip_scrape, favorites),
         daemon=True
     )
     t.start()
@@ -908,7 +908,7 @@ def _run_diary_sync_pipeline(job_id, username, tmdb_key):
                     status='failed', error=str(e))
 
 
-def _run_onboarding_pipeline(job_id, username, pin, tmdb_key, gemini_key):
+def _run_onboarding_pipeline(job_id, username, pin, tmdb_key, gemini_key, skip_scrape=False, favorites=None):
     try:
         user = get_or_create_user(username, pin=pin, tmdb_key=tmdb_key, gemini_key=gemini_key)
         if not user:
@@ -919,73 +919,110 @@ def _run_onboarding_pipeline(job_id, username, pin, tmdb_key, gemini_key):
         active_tmdb = tmdb_key or (user.get('tmdb_key') if user else '') or TMDB_KEY
 
         _update_job(job_id, 5, 'auth', 'Setting up profile for @{0}...'.format(username))
-        session = get_scrape_session()
-
-        # 1. Diary - every page, not just the 50-entry RSS window
-        _update_job(job_id, 10, 'diary_scrape',
-                    'Reading full Letterboxd diary for @{0}...'.format(username))
-
-        def page_progress(page, count):
-            _update_job(job_id, min(10 + page, 28), 'diary_scrape',
-                        'Reading diary page {0} ({1} films so far)...'.format(page, count))
-
-        diary_entries = scrape_letterboxd_diary(username, session=session, on_page=page_progress)
-        _update_job(job_id, 30, 'diary_scrape',
-                    'Found {0} diary entries.'.format(len(diary_entries)),
-                    diary_count=len(diary_entries))
-
-        # 2. Resolve diary films against TMDB
-        movie_records, slug_to_id = resolve_entries(
-            diary_entries, active_tmdb, job_id=job_id,
-            base_progress=30, span=30, label='diary films'
-        )
-
+        
         diary_links = []
-        for e in diary_entries:
-            mid = slug_to_id.get(e['slug'])
-            if not mid:
-                continue
-            diary_links.append({
-                'movie_id': mid,
-                'rating': e.get('rating'),
-                'watched_date': e.get('watched_date') or ''
-            })
-
-        _update_job(job_id, 62, 'saving',
-                    'Saving {0} diary films to the database...'.format(len(diary_links)))
-        if movie_records:
-            upsert_movies_batch(movie_records)
-        if diary_links:
-            upsert_user_diary(user['id'], diary_links)
-
-        # 3. Watchlist
-        _update_job(job_id, 68, 'watchlist', 'Reading watchlist for @{0}...'.format(username))
-        wl_entries = scrape_letterboxd_watchlist(username, session=session)
-        _update_job(job_id, 72, 'watchlist',
-                    'Found {0} watchlist films.'.format(len(wl_entries)),
-                    watchlist_count=len(wl_entries))
-
         wl_links = []
-        if wl_entries:
-            wl_records, wl_slug_to_id = resolve_entries(
-                wl_entries, active_tmdb, job_id=job_id,
-                base_progress=72, span=16, label='watchlist films'
+
+        if not skip_scrape:
+            session = get_scrape_session()
+
+            # 1. Diary - every page, not just the 50-entry RSS window
+            _update_job(job_id, 10, 'diary_scrape',
+                        'Reading full Letterboxd diary for @{0}...'.format(username))
+
+            def page_progress(page, count):
+                _update_job(job_id, min(10 + page, 28), 'diary_scrape',
+                            'Reading diary page {0} ({1} films so far)...'.format(page, count))
+
+            diary_entries = scrape_letterboxd_diary(username, session=session, on_page=page_progress)
+            _update_job(job_id, 30, 'diary_scrape',
+                        'Found {0} diary entries.'.format(len(diary_entries)),
+                        diary_count=len(diary_entries))
+
+            # 2. Resolve diary films against TMDB
+            movie_records, slug_to_id = resolve_entries(
+                diary_entries, active_tmdb, job_id=job_id,
+                base_progress=30, span=30, label='diary films'
             )
-            if wl_records:
-                upsert_movies_batch(wl_records)
+
+            for e in diary_entries:
+                mid = slug_to_id.get(e['slug'])
+                if not mid:
+                    continue
+                diary_links.append({
+                    'movie_id': mid,
+                    'rating': e.get('rating'),
+                    'watched_date': e.get('watched_date') or ''
+                })
+
+            _update_job(job_id, 62, 'saving',
+                        'Saving {0} diary films to the database...'.format(len(diary_links)))
+            if movie_records:
+                upsert_movies_batch(movie_records)
+            if diary_links:
+                upsert_user_diary(user['id'], diary_links)
+
+            # 3. Watchlist
+            _update_job(job_id, 68, 'watchlist', 'Reading watchlist for @{0}...'.format(username))
+            wl_entries = scrape_letterboxd_watchlist(username, session=session)
+            _update_job(job_id, 72, 'watchlist',
+                        'Found {0} watchlist films.'.format(len(wl_entries)),
+                        watchlist_count=len(wl_entries))
+
+            if wl_entries:
+                wl_records, wl_slug_to_id = resolve_entries(
+                    wl_entries, active_tmdb, job_id=job_id,
+                    base_progress=72, span=16, label='watchlist films'
+                )
+                if wl_records:
+                    upsert_movies_batch(wl_records)
+                today = pd.Timestamp.now().strftime('%Y-%m-%d')
+                for e in wl_entries:
+                    mid = wl_slug_to_id.get(e['slug'])
+                    if mid:
+                        wl_links.append({'movie_id': mid, 'added_date': today})
+                if wl_links:
+                    upsert_user_watchlist(user['id'], wl_links)
+        
+        # 4. Handle favorites directly if provided
+        if favorites:
+            _update_job(job_id, 80, 'favorites', 'Saving selected favorite films...')
+            fav_movies = []
+            fav_diary = []
             today = pd.Timestamp.now().strftime('%Y-%m-%d')
-            for e in wl_entries:
-                mid = wl_slug_to_id.get(e['slug'])
-                if mid:
-                    wl_links.append({'movie_id': mid, 'added_date': today})
-            if wl_links:
-                upsert_user_watchlist(user['id'], wl_links)
+            for f in favorites:
+                movie_id = int(f.get('movie_id') or f.get('id') or 0)
+                if not movie_id:
+                    continue
+                fav_movies.append({
+                    'movie_id': movie_id,
+                    'title': f.get('title', 'Untitled'),
+                    'year': str(f.get('year', '')).split('-')[0],
+                    'genres': f.get('genres', ''),
+                    'overview': f.get('overview', ''),
+                    'director': f.get('director', ''),
+                    'cast': f.get('cast', ''),
+                    'runtime': int(f.get('runtime', 0)),
+                    'vote_average': float(f.get('vote_average', 7.0)),
+                    'poster_path': f.get('poster_path', ''),
+                    'backdrop_path': f.get('backdrop_path', '')
+                })
+                fav_diary.append({
+                    'movie_id': movie_id,
+                    'rating': float(f.get('rating') if f.get('rating') is not None else 5.0),
+                    'watched_date': today
+                })
+            if fav_movies:
+                upsert_movies_batch(fav_movies)
+            if fav_diary:
+                upsert_user_diary(user['id'], fav_diary)
+                diary_links.extend(fav_diary)
 
         # Clean up any potential duplicates & invalidate cache
         cleanup_database_duplicates(user['id'])
         invalidate_user_cache(user['id'])
 
-        # 4. Train the in-memory taste model
+        # 5. Train the in-memory taste model
         _update_job(job_id, 92, 'ai_training', 'Calibrating your personal AI taste model...')
         model, _cols, _vec, _enc = train_user_model_in_memory(username)
         model_note = 'AI model calibrated' if model is not None else 'Not enough rated films to train yet'

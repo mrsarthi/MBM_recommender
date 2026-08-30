@@ -79,13 +79,13 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             return ''
         return ''
 
-    def _get_request_keys(self, user=None, body=None, query=None):
+    def _get_request_keys(self, user=None, body=None, query=None, allow_env_fallback=True):
         """
-        Resolves TMDB and Gemini API keys with fallback priority:
+        Retrieves TMDB and Gemini keys in strict priority:
         1. Explicit HTTP Headers (X-TMDB-Key, X-Gemini-Key)
         2. Body / Query parameter (tmdb_key, gemini_key)
         3. Database user profile (users.tmdb_key, users.gemini_key)
-        4. Environment variables (config.TMDB_KEY, config.GEMINI_API_KEY)
+        4. Environment variables (config.TMDB_KEY, config.GEMINI_API_KEY) - only if allow_env_fallback is True
         """
         tmdb = (
             self.headers.get('X-TMDB-Key') or 
@@ -112,10 +112,11 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             except Exception:
                 pass
 
-        if not tmdb and TMDB_KEY and TMDB_KEY != 'YOUR_TMDB_API_KEY_HERE':
-            tmdb = TMDB_KEY
-        if not gemini and GEMINI_API_KEY and GEMINI_API_KEY != 'YOUR_GEMINI_API_KEY_HERE':
-            gemini = GEMINI_API_KEY
+        if allow_env_fallback:
+            if not tmdb and TMDB_KEY and TMDB_KEY != 'YOUR_TMDB_API_KEY_HERE':
+                tmdb = TMDB_KEY
+            if not gemini and GEMINI_API_KEY and GEMINI_API_KEY != 'YOUR_GEMINI_API_KEY_HERE':
+                gemini = GEMINI_API_KEY
 
         return tmdb, gemini
 
@@ -325,16 +326,21 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         pin = str(body.get('pin') or '').strip()
         tmdb = (body.get('tmdb_key') or self.headers.get('X-TMDB-Key') or '').strip()
         gemini = (body.get('gemini_key') or self.headers.get('X-Gemini-Key') or '').strip()
+        skip_scrape = bool(body.get('skip_scrape', False))
+        favorites = body.get('favorites', [])
 
         if not username:
-            self._send_json({'success': False, 'message': 'Letterboxd username is required'}, 400)
+            self._send_json({'success': False, 'message': 'Username is required'}, 400)
             return
 
         if not pin or len(pin) < 4:
             self._send_json({'success': False, 'message': 'A 4-6 digit PIN is required to secure your profile for multi-device login'}, 400)
             return
 
-        job_id = start_onboarding_job(username, pin=pin, tmdb_key=tmdb, gemini_key=gemini)
+        job_id = start_onboarding_job(
+            username, pin=pin, tmdb_key=tmdb, gemini_key=gemini,
+            skip_scrape=skip_scrape, favorites=favorites
+        )
         self._send_json({
             'success': True,
             'job_id': job_id,
@@ -718,9 +724,9 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
     def _handle_search_tmdb(self, query):
         q = query.get('q', [''])[0].strip()
         user = self._get_request_user(query)
-        tmdb_key, _ = self._get_request_keys(user=user, query=query)
+        tmdb_key, _ = self._get_request_keys(user=user, query=query, allow_env_fallback=False)
         if not q or not tmdb_key:
-            self._send_json({'results': []})
+            self._send_json({'results': [], 'error': 'TMDB API key is required'})
             return
 
         try:

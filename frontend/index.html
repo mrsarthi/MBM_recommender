@@ -441,7 +441,7 @@
                 <button class="modal-x" onclick="closeOnboardingModal()">✕</button>
             </div>
             <div class="modal-body onboard-body">
-                <!-- Step 1: Letterboxd Account & PIN -->
+                <!-- Step 1: Account, PIN & API Keys -->
                 <div class="onboard-step" id="onboard-step-1">
                     <div style="display:flex;gap:8px;margin-bottom:12px;">
                         <button id="tab-btn-setup" class="onboard-tab-btn active" onclick="switchOnboardTab('setup')">New Profile</button>
@@ -450,29 +450,40 @@
 
                     <div id="onboard-form-setup">
                         <div class="onboard-badge">STEP 1 OF 2</div>
-                        <h3 class="onboard-title">Personalize with Letterboxd</h3>
-                        <p class="onboard-subtitle">Train an on-demand machine learning model on your ratings and sync safely to Neon Cloud DB.</p>
+                        <h3 class="onboard-title" id="onboard-title-setup">Profile & API Keys</h3>
+                        <p class="onboard-subtitle" id="onboard-subtitle-setup">Enter your credentials and personal TMDB key to fetch posters, cast, and search movies.</p>
+                        
                         <div class="sync-input-row" style="margin: 14px 0 10px;">
                             <span class="sync-at">@</span>
                             <input id="onboard-username" type="text" class="sync-user-field" placeholder="your_letterboxd_username" value="">
                         </div>
+
                         <div class="onboard-field" style="margin-bottom:12px;">
                             <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Profile PIN (4-6 Digits) <span style="color:var(--accent); font-weight:700;">* Required</span></label>
                             <input id="onboard-pin" type="password" maxlength="6" class="onboard-input" placeholder="Create a 4-6 digit PIN (required for multi-device login)">
                         </div>
 
-                        <div class="onboard-or-divider" style="display:flex;align-items:center;gap:8px;margin:12px 0 8px;color:var(--text3);font-size:10px;font-weight:700;">
-                            <div style="flex:1;height:1px;background:var(--border);"></div>
-                            <span>OPTIONAL: FULL LIFETIME HISTORY</span>
-                            <div style="flex:1;height:1px;background:var(--border);"></div>
+                        <div class="onboard-field" style="margin-bottom:12px;">
+                            <div class="onboard-label-row">
+                                <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Your TMDB API Key <span style="color:var(--accent); font-weight:700;">* Required</span></label>
+                                <a href="https://www.themoviedb.org/settings/api" target="_blank" class="onboard-link" style="font-size:10px;color:var(--accent);">Get Free Key ↗</a>
+                            </div>
+                            <input id="onboard-tmdb" type="password" class="onboard-input" placeholder="Enter your personal TMDB API Key">
                         </div>
 
-                        <div class="onboard-csv-box" onclick="document.getElementById('onboard-csv-file').click()" style="border:1px dashed rgba(255,255,255,0.2);border-radius:8px;padding:10px;text-align:center;cursor:pointer;background:var(--bg-hover);margin-bottom:14px;transition:all 0.2s;">
-                            <input type="file" id="onboard-csv-file" accept=".csv" style="display:none;" onchange="handleOnboardCSVSelected(event)">
-                            <div id="onboard-csv-label" style="font-size:11px;color:var(--text2);">📂 Upload Letterboxd <strong>diary.csv</strong> / <strong>ratings.csv</strong> (all 700+ films)</div>
+                        <div class="onboard-field" style="margin-bottom:12px;">
+                            <div class="onboard-label-row">
+                                <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Google Gemini Key <span style="color:var(--text3); font-weight:500;">(Optional)</span></label>
+                                <a href="https://aistudio.google.com/" target="_blank" class="onboard-link" style="font-size:10px;color:var(--accent);">Get Free Key ↗</a>
+                            </div>
+                            <input id="onboard-gemini" type="password" class="onboard-input" placeholder="Enter Gemini Key (or leave blank)" oninput="updateGeminiNotice()">
                         </div>
 
-                        <button class="sp-btn primary" style="width:100%;" onclick="nextOnboardStep(2)">Next: API Keys →</button>
+                        <div class="onboard-fallback-link" style="text-align:center;margin-bottom:14px;margin-top:8px;">
+                            <a href="#" style="font-size:11px;color:var(--accent);text-decoration:none;font-weight:600;" onclick="toggleLetterboxdFallback(event)">I don't have a Letterboxd account</a>
+                        </div>
+
+                        <button class="sp-btn primary" style="width:100%;" onclick="nextOnboardStep(2)">Next: Taste Calibration →</button>
                     </div>
 
                     <div id="onboard-form-login" style="display:none;">
@@ -491,38 +502,44 @@
                     </div>
                 </div>
                 
-                <!-- Step 2: Private API Keys (Stored 100% in IndexedDB & Neon) -->
+                <!-- Step 2: Taste Calibration & History -->
                 <div class="onboard-step" id="onboard-step-2" style="display:none;">
                     <div class="onboard-badge">STEP 2 OF 2</div>
-                    <h3 class="onboard-title">API Keys Configuration</h3>
-                    <p class="onboard-subtitle">Saved to your private account so you can access recommendations from any device.</p>
                     
-                    <div class="onboard-field">
-                        <div class="onboard-label-row">
-                            <label>TMDB API Key <span style="color:var(--accent); font-weight:700;">* Required</span></label>
-                            <a href="https://www.themoviedb.org/settings/api" target="_blank" class="onboard-link">Get Free Key ↗</a>
+                    <!-- Letterboxd Mode -->
+                    <div id="onboard-step2-letterboxd">
+                        <h3 class="onboard-title">Sync Letterboxd History</h3>
+                        <p class="onboard-subtitle">We will scan your public Letterboxd diary and watchlist to build your AI profile.</p>
+
+                        <div class="onboard-or-divider" style="display:flex;align-items:center;gap:8px;margin:16px 0 10px;color:var(--text3);font-size:10px;font-weight:700;">
+                            <div style="flex:1;height:1px;background:var(--border);"></div>
+                            <span>OPTIONAL: FULL LIFETIME HISTORY</span>
+                            <div style="flex:1;height:1px;background:var(--border);"></div>
                         </div>
-                        <input id="onboard-tmdb" type="password" class="onboard-input" placeholder="Enter your TMDB API Key (Required for posters, cast, ratings)">
+
+                        <div class="onboard-csv-box" onclick="document.getElementById('onboard-csv-file').click()" style="border:1px dashed rgba(255,255,255,0.2);border-radius:8px;padding:10px;text-align:center;cursor:pointer;background:var(--bg-hover);margin-bottom:16px;transition:all 0.2s;">
+                            <input type="file" id="onboard-csv-file" accept=".csv" style="display:none;" onchange="handleOnboardCSVSelected(event)">
+                            <div id="onboard-csv-label" style="font-size:11px;color:var(--text2);">📂 Upload Letterboxd <strong>diary.csv</strong> / <strong>ratings.csv</strong> (all 700+ films)</div>
+                        </div>
                     </div>
 
-                    <div class="onboard-field" style="margin-top:12px;">
-                        <div class="onboard-label-row">
-                            <label>Google Gemini Key <span style="color:var(--text3); font-weight:500;">(Optional)</span></label>
-                            <a href="https://aistudio.google.com/" target="_blank" class="onboard-link">Get Free Key ↗</a>
+                    <!-- No Letterboxd Mode (Taste Search) -->
+                    <div id="onboard-step2-favorites" style="display:none;">
+                        <h3 class="onboard-title">Select Favorite Films</h3>
+                        <p class="onboard-subtitle">Pick 3–5 of your favorite movies so your personal AI taste model can calibrate.</p>
+                        
+                        <div style="margin-top: 14px; text-align: left;">
+                            <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Search films on TMDB:</label>
+                            <input id="onboard-movie-search" type="text" class="onboard-input" placeholder="Type movie name (e.g. Inception, Dune)..." oninput="searchFallbackMovies(this.value)">
+                            <div id="onboard-movie-search-results" style="max-height:160px;overflow-y:auto;background:var(--bg-raised);border:1px solid var(--border);border-radius:8px;display:none;margin-top:6px;font-size:12px;position:relative;z-index:999;box-shadow:0 8px 24px rgba(0,0,0,0.6);"></div>
+                            <div id="onboard-selected-movies" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;"></div>
                         </div>
-                        <input id="onboard-gemini" type="password" class="onboard-input" placeholder="Enter Gemini Key (or leave blank for In-Built Model)" oninput="updateGeminiNotice()">
                     </div>
 
-                    <!-- Informative Drawbacks Notice for No Gemini Key -->
-                    <div id="gemini-status-callout" style="margin-top:12px; padding:10px 12px; border-radius:8px; font-size:11px; line-height:1.45; background:rgba(234, 179, 8, 0.08); border:1px solid rgba(234, 179, 8, 0.25); color:#facc15;">
+                    <!-- Gemini Status Callout -->
+                    <div id="gemini-status-callout" style="margin-top:14px; padding:10px 12px; border-radius:8px; font-size:11px; line-height:1.45; background:rgba(234, 179, 8, 0.08); border:1px solid rgba(234, 179, 8, 0.25); color:#facc15;">
                         <strong style="display:block; margin-bottom:4px; color:#fef08a;">ℹ️ No Gemini Key? No problem!</strong>
-                        <span>Your taste profile & star ratings will still work 100% using our built-in offline model.</span>
-                        <div style="margin-top:6px; font-weight:600; color:#fde047;">What you miss without Gemini:</div>
-                        <ul style="margin:3px 0 0 16px; padding:0; color:#fef08a;">
-                            <li><strong>Mood Search:</strong> Works best with simple words (e.g. <em>horror</em>, <em>sci-fi</em>) instead of complex sentences (e.g. <em>"dark moody rainy cyberpunk"</em>).</li>
-                            <li><strong>Movie Pitches:</strong> Shows standard summaries instead of personalized 1-sentence AI vibe pitches.</li>
-                            <li><strong>Watchlist Matching:</strong> Matches saved movies by genre rather than subtle story themes.</li>
-                        </ul>
+                        <span>Your taste profile & star ratings will work 100% using our built-in offline model.</span>
                     </div>
 
                     <div style="display:flex;gap:10px;margin-top:16px;">
@@ -548,6 +565,6 @@
 
 </div>
 
-<script src="app.js?v=5.1"></script>
+<script src="app.js?v=5.5"></script>
 </body>
 </html>
