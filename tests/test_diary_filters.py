@@ -76,11 +76,44 @@ def apply_diary_filters_and_sort(df, year_filter="All Time", rating_filter="All 
 
     return filtered_df
 
+SAMPLE_DIARY_RECORDS = [
+    {"Name": "Pinocchio: Unstrung", "Date": "2026-08-23", "Year": 2024, "Rating": 5.0, "director": "Guillermo del Toro", "genres": "Fantasy|Adventure", "cast": "Benjamin Alfonzo"},
+    {"Name": "Weapons", "Date": "2026-08-21", "Year": 2024, "Rating": 4.5, "director": "Zach Cregger", "genres": "Action|Horror", "cast": "Josh Brolin"},
+    {"Name": "Spider-Man: Across the Spider-Verse", "Date": "2026-08-20", "Year": 2023, "Rating": 5.0, "director": "Phil Lord", "genres": "Animation|Action", "cast": "Shameik Moore"},
+    {"Name": "A Tale of Two Sisters", "Date": "2026-08-19", "Year": 2003, "Rating": 4.0, "director": "Kim Jee-woon", "genres": "Drama|Horror|Mystery", "cast": "Lim Soo-jung"},
+    {"Name": "Blade Runner 2049", "Date": "2026-08-18", "Year": 2017, "Rating": 4.5, "director": "Denis Villeneuve", "genres": "Science Fiction|Mystery", "cast": "Ryan Gosling"},
+    {"Name": "Chinatown", "Date": "2026-08-17", "Year": 1974, "Rating": 4.5, "director": "Roman Polanski", "genres": "Crime|Drama|Mystery", "cast": "Jack Nicholson"},
+    {"Name": "Dune: Part Two", "Date": "2026-08-16", "Year": 2024, "Rating": 4.5, "director": "Denis Villeneuve", "genres": "Science Fiction|Adventure", "cast": "Timothée Chalamet"},
+    {"Name": "Everything Everywhere All at Once", "Date": "2026-08-15", "Year": 2022, "Rating": 4.0, "director": "Daniel Kwan", "genres": "Action|Adventure|Science Fiction", "cast": "Michelle Yeoh"},
+    {"Name": "Fight Club", "Date": "2026-08-14", "Year": 1999, "Rating": 4.5, "director": "David Fincher", "genres": "Drama", "cast": "Brad Pitt"},
+    {"Name": "Get Out", "Date": "2026-08-13", "Year": 2017, "Rating": 4.0, "director": "Jordan Peele", "genres": "Mystery|Thriller|Horror", "cast": "Daniel Kaluuya"},
+    {"Name": "Hereditary", "Date": "2026-08-12", "Year": 2018, "Rating": 4.0, "director": "Ari Aster", "genres": "Horror|Mystery", "cast": "Toni Collette"},
+    {"Name": "Inception", "Date": "2026-08-11", "Year": 2010, "Rating": 5.0, "director": "Christopher Nolan", "genres": "Action|Science Fiction|Adventure", "cast": "Leonardo DiCaprio"},
+    {"Name": "Interstellar", "Date": "2026-08-10", "Year": 2014, "Rating": 4.5, "director": "Christopher Nolan", "genres": "Adventure|Drama|Science Fiction", "cast": "Matthew McConaughey"},
+    {"Name": "Joker", "Date": "2026-08-09", "Year": 2019, "Rating": 3.5, "director": "Todd Phillips", "genres": "Crime|Thriller|Drama", "cast": "Joaquin Phoenix"},
+    {"Name": "Kill Bill: Vol. 1", "Date": "2026-08-08", "Year": 2003, "Rating": 4.0, "director": "Quentin Tarantino", "genres": "Action|Crime", "cast": "Uma Thurman"},
+    {"Name": "La La Land", "Date": "2026-08-07", "Year": 2016, "Rating": 4.5, "director": "Damien Chazelle", "genres": "Comedy|Drama|Music|Romance", "cast": "Ryan Gosling"},
+    {"Name": "Memento", "Date": "2026-08-06", "Year": 2000, "Rating": 4.5, "director": "Christopher Nolan", "genres": "Mystery|Thriller", "cast": "Guy Pearce"},
+    {"Name": "Nightcrawler", "Date": "2026-08-05", "Year": 2014, "Rating": 4.0, "director": "Dan Gilroy", "genres": "Crime|Drama|Thriller", "cast": "Jake Gyllenhaal"},
+    {"Name": "Oppenheimer", "Date": "2026-08-04", "Year": 2023, "Rating": 4.5, "director": "Christopher Nolan", "genres": "Drama|History", "cast": "Cillian Murphy"},
+    {"Name": "Parasite", "Date": "2026-08-03", "Year": 2019, "Rating": 5.0, "director": "Bong Joon-ho", "genres": "Comedy|Thriller|Drama", "cast": "Song Kang-ho"},
+    {"Name": "Spirited Away", "Date": "2026-08-02", "Year": 2001, "Rating": 5.0, "director": "Hayao Miyazaki", "genres": "Animation|Family|Fantasy", "cast": "Rumi Hiiragi"},
+    {"Name": "The Batman", "Date": "2026-08-01", "Year": 2022, "Rating": 4.0, "director": "Matt Reeves", "genres": "Crime|Mystery|Thriller", "cast": "Robert Pattinson"},
+    {"Name": "The Matrix", "Date": "2026-07-31", "Year": 1999, "Rating": 5.0, "director": "Lana Wachowski", "genres": "Action|Science Fiction", "cast": "Keanu Reeves"},
+    {"Name": "The Room", "Date": "2026-07-30", "Year": 2003, "Rating": 1.0, "director": "Tommy Wiseau", "genres": "Drama|Romance", "cast": "Tommy Wiseau"},
+    {"Name": "Troll 2", "Date": "2026-07-29", "Year": 1990, "Rating": 0.5, "director": "Claudio Fragasso", "genres": "Fantasy|Horror", "cast": "Michael Stephenson"},
+    {"Name": "Zoolander 2", "Date": "2026-07-28", "Year": 2016, "Rating": 1.5, "director": "Ben Stiller", "genres": "Comedy", "cast": "Ben Stiller"}
+]
+
 class TestDiaryFilters(unittest.TestCase):
     def setUp(self):
         self.profile_path = 'user_data/user_profile.csv'
-        self.assertTrue(os.path.exists(self.profile_path))
-        self.df = pd.read_csv(self.profile_path)
+        if os.path.exists(self.profile_path):
+            self.df = pd.read_csv(self.profile_path)
+        else:
+            os.makedirs('user_data', exist_ok=True)
+            self.df = pd.DataFrame(SAMPLE_DIARY_RECORDS)
+            self.df.to_csv(self.profile_path, index=False)
 
     def test_sort_newest_first(self):
         sorted_df = apply_diary_filters_and_sort(self.df, sort_mode="Newest Log First")

@@ -9,6 +9,21 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: testdb
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
@@ -25,6 +40,10 @@ jobs:
           pip install -r requirements.txt
       - name: Run Test Suite
         env:
+          DATABASE_URL: "postgresql://postgres:password@localhost:5432/testdb"
+          TMDB_key: "fa2b9a56280d1fcd1e4dce8f48525f99"
+          GEMINI_API_KEY: "AIzaSyB8obzSOD8kmmaz9qkDoKKA-Gma8MLtWIw"
+          LETTERBOXD_USERNAME: "sarthi_watcher"
           ENCRYPTION_KEY: "mbmr_ci_test_encryption_key_32b=="
           SESSION_SECRET: "mbmr_ci_session_secret_12345"
         run: |
