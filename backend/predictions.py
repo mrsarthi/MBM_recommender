@@ -12,7 +12,7 @@ def load_ai(model_path=MODEL_PATH, cols_path=COLUMNS_PATH, vec_path=VECTORIZER_P
     encoders = joblib.load(enc_path) if os.path.exists(enc_path) else None
     return model, cols, vec, encoders
 
-def predict_movie_scores_batch(model, feature_cols, vectorizer, encoders, movies_list):
+def predict_movie_scores_batch(model, feature_cols, vectorizer, encoders, movies_list, context="Alone"):
     """
     Vectorized batch inference: computes AI match scores for an entire list of movies
     in a single 2D matrix pass (< 5ms for 200 films) instead of slow sequential loops.
@@ -23,6 +23,25 @@ def predict_movie_scores_batch(model, feature_cols, vectorizer, encoders, movies
     n = len(movies_list)
     col_idx = {c: i for i, c in enumerate(feature_cols)}
     X = np.zeros((n, len(feature_cols)), dtype=np.float32)
+
+    # Prior defaults from training
+    user_mean = float((encoders or {}).get('user_mean', 3.5)) if encoders else 3.5
+    dir_target_map = (encoders or {}).get('director_target_map', {}) if encoders else {}
+    dir_count_map = (encoders or {}).get('dir_count_map', {}) if encoders else {}
+    cast_target_map = (encoders or {}).get('cast_target_map', {}) if encoders else {}
+    cast_count_map = (encoders or {}).get('cast_count_map', {}) if encoders else {}
+    le_dir = (encoders or {}).get('director') if encoders else None
+    dir_classes = set(getattr(le_dir, 'classes_', [])) if le_dir else set()
+
+    # Pre-fill target encoded columns with user_mean prior baseline
+    if 'director_target_encoded' in col_idx:
+        X[:, col_idx['director_target_encoded']] = user_mean
+    if 'cast_0_target_encoded' in col_idx:
+        X[:, col_idx['cast_0_target_encoded']] = user_mean
+    if 'cast_1_target_encoded' in col_idx:
+        X[:, col_idx['cast_1_target_encoded']] = user_mean
+    if 'runtime_clean' in col_idx:
+        X[:, col_idx['runtime_clean']] = 105.0
 
     # 1. Extract and transform all overviews in one TF-IDF batch
     if vectorizer is not None:
@@ -36,10 +55,7 @@ def predict_movie_scores_batch(model, feature_cols, vectorizer, encoders, movies
         except Exception:
             pass
 
-    # 2. Extract genres, directors, and runtimes
-    le_dir = (encoders or {}).get('director') if encoders else None
-    dir_classes = set(getattr(le_dir, 'classes_', [])) if le_dir else set()
-
+    # 2. Extract genres, directors, cast, and runtimes
     for row_i, m in enumerate(movies_list):
         # Genres
         genres_raw = m.get('genres', [])
@@ -52,51 +68,97 @@ def predict_movie_scores_batch(model, feature_cols, vectorizer, encoders, movies
 
         # Director
         d = str(m.get('director') or '').strip()
-        if 'director_encoded' in col_idx and le_dir and d in dir_classes:
-            try:
-                X[row_i, col_idx['director_encoded']] = float(le_dir.transform([d])[0])
-            except Exception:
-                pass
+        if d:
+            if 'director_target_encoded' in col_idx and d in dir_target_map:
+                X[row_i, col_idx['director_target_encoded']] = dir_target_map[d]
+            if 'director_film_count' in col_idx:
+                X[row_i, col_idx['director_film_count']] = float(dir_count_map.get(d, 0))
+            if 'director_encoded' in col_idx and le_dir and d in dir_classes:
+                try:
+                    X[row_i, col_idx['director_encoded']] = float(le_dir.transform([d])[0])
+                except Exception:
+                    pass
+
+        # Cast
+        cast_raw = m.get('cast', '')
+        if isinstance(cast_raw, list):
+            actors = [str(a).strip() for a in cast_raw if str(a).strip()]
+        else:
+            actors = [a.strip() for a in str(cast_raw or '').split(',') if a.strip()]
+        
+        a0 = actors[0] if len(actors) > 0 else ''
+        a1 = actors[1] if len(actors) > 1 else ''
+        if 'cast_0_target_encoded' in col_idx and a0 in cast_target_map:
+            X[row_i, col_idx['cast_0_target_encoded']] = cast_target_map[a0]
+        if 'cast_1_target_encoded' in col_idx and a1 in cast_target_map:
+            X[row_i, col_idx['cast_1_target_encoded']] = cast_target_map[a1]
+        if 'cast_film_count' in col_idx:
+            X[row_i, col_idx['cast_film_count']] = float(max(cast_count_map.get(a0, 0), cast_count_map.get(a1, 0)))
 
         # Runtime
         if 'runtime_clean' in col_idx:
             try:
                 r = float(m.get('runtime', 0) or 0)
-                X[row_i, col_idx['runtime_clean']] = r if r > 0 else 105.0
+                if r > 0:
+                    X[row_i, col_idx['runtime_clean']] = r
             except Exception:
-                X[row_i, col_idx['runtime_clean']] = 105.0
+                pass
 
     try:
         preds = model.predict(X)
-        return [round(float(p), 1) for p in preds]
+        results = []
+        for i, p in enumerate(preds):
+            val = float(p)
+            # Context adjustments
+            m_genres = movies_list[i].get('genres', [])
+            if isinstance(m_genres, str):
+                m_genres = [g.strip() for g in m_genres.split(',')]
+            if context == "With Partner":
+                if any(g in ['Romance', 'Comedy', 'Drama'] for g in m_genres): val += 0.2
+                if any(g in ['Horror', 'Documentary'] for g in m_genres): val -= 0.15
+            elif context == "Friends Night":
+                if any(g in ['Action', 'Comedy', 'Horror', 'Adventure'] for g in m_genres): val += 0.25
+                if any(g in ['Drama', 'Documentary'] for g in m_genres): val -= 0.2
+            elif context == "Family":
+                if any(g in ['Animation', 'Family', 'Adventure'] for g in m_genres): val += 0.3
+                if any(g in ['Horror', 'Crime', 'Thriller'] for g in m_genres): val -= 0.4
+            
+            results.append(round(min(5.0, max(0.5, val)), 1))
+        return results
     except Exception:
         return [3.8] * n
 
 def predict_movie_score(model, feature_cols, vectorizer, encoders, genres=None, director=None,
-                        keywords=None, context="Alone", overview="", runtime=None):
+                        keywords=None, context="Alone", overview="", runtime=None, cast=None):
     """
     Predicts a personal rating (0.5-5.0) for candidate movie metadata.
-
-    The feature vector built here MUST mirror the one built during training in
-    backend/in_memory_model.py, which produces:
-        genre_<Name>      multi-hot genre flags
-        tfidf_<i>         i-th component of the fitted TF-IDF vector over the overview
-        director_encoded  LabelEncoder index for the director
-        runtime_clean     runtime in minutes (105 when unknown)
-
-    Older on-disk models used `ov_<word>` / `dir_<name>` instead, so both layouts are
-    filled in and whichever the model actually declares is the one that gets used.
     """
     if model is None or not feature_cols:
         return 3.5
+
+    user_mean = float((encoders or {}).get('user_mean', 3.5)) if encoders else 3.5
+    dir_target_map = (encoders or {}).get('director_target_map', {}) if encoders else {}
+    dir_count_map = (encoders or {}).get('dir_count_map', {}) if encoders else {}
+    cast_target_map = (encoders or {}).get('cast_target_map', {}) if encoders else {}
+    cast_count_map = (encoders or {}).get('cast_count_map', {}) if encoders else {}
 
     genres = genres or []
     if isinstance(genres, str):
         genres = [g.strip() for g in genres.split(',') if g.strip()]
     row = {c: 0.0 for c in feature_cols}
-    col_set = row.keys()
+    col_set = set(row.keys())
 
-    # 1. Genres (same column name in both layouts)
+    # Pre-fill priors
+    if 'director_target_encoded' in col_set:
+        row['director_target_encoded'] = user_mean
+    if 'cast_0_target_encoded' in col_set:
+        row['cast_0_target_encoded'] = user_mean
+    if 'cast_1_target_encoded' in col_set:
+        row['cast_1_target_encoded'] = user_mean
+    if 'runtime_clean' in col_set:
+        row['runtime_clean'] = 105.0
+
+    # 1. Genres
     for g in genres:
         col = f'genre_{str(g).strip()}'
         if col in col_set:
@@ -106,37 +168,42 @@ def predict_movie_score(model, feature_cols, vectorizer, encoders, genres=None, 
     if vectorizer is not None and overview:
         try:
             vec_vals = vectorizer.transform([str(overview)]).toarray()[0]
-            # Current layout: positional tfidf_<i>
             for i, val in enumerate(vec_vals):
                 col = f'tfidf_{i}'
                 if col in col_set:
                     row[col] = float(val)
-            # Legacy layout: ov_<term>
-            if any(c.startswith('ov_') for c in col_set):
-                for w, val in zip(vectorizer.get_feature_names_out(), vec_vals):
-                    col = f'ov_{w}'
-                    if col in col_set:
-                        row[col] = float(val)
         except Exception:
             pass
 
     # 3. Director
     if director:
         d = str(director).strip()
+        if 'director_target_encoded' in col_set and d in dir_target_map:
+            row['director_target_encoded'] = dir_target_map[d]
+        if 'director_film_count' in col_set:
+            row['director_film_count'] = float(dir_count_map.get(d, 0))
         if 'director_encoded' in col_set:
             le = (encoders or {}).get('director')
-            try:
-                # LabelEncoder.transform raises on unseen labels, so look it up first.
-                classes = list(getattr(le, 'classes_', []))
-                if d in classes:
-                    row['director_encoded'] = float(classes.index(d))
-            except Exception:
-                pass
-        col = f'dir_{d}'
-        if col in col_set:
-            row[col] = 1.0
+            classes = list(getattr(le, 'classes_', [])) if le else []
+            if d in classes:
+                row['director_encoded'] = float(classes.index(d))
 
-    # 4. Runtime — training filled unknowns with 105, so 0 would be far out of distribution.
+    # 4. Cast
+    if cast:
+        if isinstance(cast, list):
+            actors = [str(a).strip() for a in cast if str(a).strip()]
+        else:
+            actors = [a.strip() for a in str(cast or '').split(',') if a.strip()]
+        a0 = actors[0] if len(actors) > 0 else ''
+        a1 = actors[1] if len(actors) > 1 else ''
+        if 'cast_0_target_encoded' in col_set and a0 in cast_target_map:
+            row['cast_0_target_encoded'] = cast_target_map[a0]
+        if 'cast_1_target_encoded' in col_set and a1 in cast_target_map:
+            row['cast_1_target_encoded'] = cast_target_map[a1]
+        if 'cast_film_count' in col_set:
+            row['cast_film_count'] = float(max(cast_count_map.get(a0, 0), cast_count_map.get(a1, 0)))
+
+    # 5. Runtime
     if 'runtime_clean' in col_set:
         try:
             rt = float(runtime) if runtime not in (None, '', 0) else 105.0

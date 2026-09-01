@@ -681,7 +681,25 @@ async function fetchWatchlist() {
 
     try {
         const res = await fetch(url);
+        if (res.status === 401) {
+            const grid = document.getElementById('watchlist-grid');
+            if (grid) {
+                grid.innerHTML = `
+                    <div style="grid-column:1/-1;text-align:center;padding:70px 0;color:var(--text3);">
+                        <div style="font-size:36px;margin-bottom:12px;">🔒</div>
+                        <p style="font-size:16px;font-weight:600;color:var(--text1);">PIN Authentication Required</p>
+                        <p style="font-size:13px;color:var(--text3);margin:6px auto 16px;max-width:340px;">Your private watchlist is secured. Enter your PIN to view and manage your films.</p>
+                        <button class="sp-btn primary" style="padding:8px 24px;" onclick="openLoginPrompt()">Enter PIN to Unlock ✦</button>
+                    </div>
+                `;
+            }
+            return;
+        }
         const data = await res.json();
+        if (data.error === 'Unauthorized') {
+            openLoginPrompt();
+            return;
+        }
         const items = data.watchlist || [];
         watchlistCache.set(cacheKey, data);
         if (currentWatchlistCluster === 'All' && sort === 'Highest Predicted ★' && stream === 'All Platforms') {
@@ -993,7 +1011,27 @@ async function fetchDiary(resetPage = true) {
     }
 
     try {
-        const d = await (await fetch(url)).json();
+        const res = await fetch(url);
+        if (res.status === 401) {
+            const listEl = document.getElementById('journal-list');
+            const gridEl = document.getElementById('journal-grid');
+            const lockHtml = `
+                <div style="grid-column:1/-1;text-align:center;padding:70px 0;color:var(--text3);width:100%;">
+                    <div style="font-size:36px;margin-bottom:12px;">🔒</div>
+                    <p style="font-size:16px;font-weight:600;color:var(--text1);">PIN Authentication Required</p>
+                    <p style="font-size:13px;color:var(--text3);margin:6px auto 16px;max-width:340px;">Your film diary and ratings are secured. Enter your PIN to unlock your logs.</p>
+                    <button class="sp-btn primary" style="padding:8px 24px;" onclick="openLoginPrompt()">Enter PIN to Unlock ✦</button>
+                </div>
+            `;
+            if (listEl) listEl.innerHTML = lockHtml;
+            if (gridEl) gridEl.innerHTML = lockHtml;
+            return;
+        }
+        const d = await res.json();
+        if (d.error === 'Unauthorized') {
+            openLoginPrompt();
+            return;
+        }
         diaryCache.set(cacheKey, d);
         if (!s && diaryRating === 'All' && sort === 'Newest Log First') {
             try { localStorage.setItem('mbmr_cached_diary', JSON.stringify(d)); } catch(e) {}
@@ -1524,14 +1562,31 @@ function closeOnboardingModal() {
 
 async function checkOnboarding() {
     const user = await MBMRStorage.get('letterboxd_username');
+    const token = (await MBMRStorage.get('mbmr_session_token')) || localStorage.getItem('mbmr_session_token');
+    
     if (!user || user === 'guest') {
         openOnboardingModal();
+        return true;
+    } else if (!token) {
+        // User is configured locally but has no valid session token (PIN login required)
+        openLoginPrompt();
         return true;
     } else {
         const syncInput = document.getElementById('sync-user-input');
         if (syncInput) syncInput.value = user;
         return false;
     }
+}
+
+async function openLoginPrompt() {
+    openOnboardingModal();
+    switchOnboardTab('login');
+    const user = (await MBMRStorage.get('letterboxd_username')) || '';
+    const loginUser = document.getElementById('login-username');
+    if (loginUser && user && user !== 'guest') {
+        loginUser.value = user;
+    }
+    setTimeout(() => document.getElementById('login-pin')?.focus(), 150);
 }
 
 function switchOnboardTab(tab) {
