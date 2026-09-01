@@ -7,7 +7,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from backend.config import TMDB_KEY, TMDB_BASE_URL, PROFILE_PATH, APP_MEMORY_FILE
-from backend.predictions import predict_movie_score, get_watch_providers
+from backend.predictions import predict_movie_score, predict_movie_scores_batch, get_watch_providers
 
 class SimpleCachedSession:
     """Thread-safe in-memory cache on top of requests.Session with connection pooling and retries."""
@@ -259,16 +259,37 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             'fantasy': 'Fantasy', 'western': 'Western', 'documentary': 'Documentary'
         }
         explicit_target_genres = {g for kw, g in genre_keywords.items() if kw in prompt_lower}
+        # Merge genres from ai_analysis and raw prompt
+        if ai_analysis and isinstance(ai_analysis, dict):
+            for g in ai_analysis.get('genres', []):
+                if g: explicit_target_genres.add(g)
 
         ai_matches = filter_and_rank_watchlist_with_ai(
             raw_prompt, wl_movies, custom_api_key=gemini_key, taste_context=taste_anchors
         )
 
+        hated_set = {titleNormalize(h) for h in hated_movies if h}
+        raw_scores = predict_movie_scores_batch(
+            ai_model, ai_columns, ai_vectorizer, ai_encoders,
+            wl_movies, context=user_context
+        ) if ai_model else [3.8] * len(wl_movies)
+
+        search_query_text = (ai_analysis.get('search_query', '') if isinstance(ai_analysis, dict) else '') or ''
+        combined_query_text = f"{prompt_lower} {search_query_text.lower()}"
+
+        synonym_groups = {
+            'weird': ['weird', 'surreal', 'bizarre', 'strange', 'mutant', 'unconventional', 'psychedelic', 'cult', 'absurd', 'grotesque', 'insane'],
+            'scary': ['scary', 'spooky', 'terrifying', 'slasher', 'haunting', 'paranormal', 'creepy'],
+            'funny': ['funny', 'comedy', 'hilarious', 'humor', 'satire', 'spoof', 'wit'],
+            'niche': ['niche', 'indie', 'arthouse', 'obscure', 'gem', 'underground', 'cult'],
+            'epic': ['epic', 'universe', 'multiverse', 'adventure', 'monumental', 'grand']
+        }
+
         candidates = []
-        for m in wl_movies:
+        for idx, m in enumerate(wl_movies):
             m_id = int(m.get('movie_id') or m.get('id') or 0)
             m_genres = [g.strip() for g in str(m.get('genres', '')).split(',') if g.strip()]
-            m_overview = str(m.get('overview', ''))
+            m_overview = str(m.get('overview', '')).lower()
             m_title = str(m.get('title', ''))
             m_norm_title = titleNormalize(m_title)
 
@@ -281,44 +302,50 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                 thematic_rel = 0.15 if ai_matches else 0.50
                 vibe_pitch = ''
 
-            # If query explicitly asked for specific genres, enforce genre alignment
+            # Concept intersection matching
+            concept_hits = 0
+            for c_key, c_terms in synonym_groups.items():
+                if any(t in combined_query_text for t in c_terms):
+                    if any(t in m_overview or t in m_title.lower() or any(t in g.lower() for g in m_genres) for t in c_terms):
+                        concept_hits += 1
+
+            # Genre intersection
+            genre_hits = 0
             if explicit_target_genres:
                 m_genres_lower = [g.lower() for g in m_genres]
-                has_genre_match = any(tg.lower() in m_genres_lower for tg in explicit_target_genres)
-                if has_genre_match:
-                    thematic_rel = min(1.0, thematic_rel + 0.15)
+                genre_hits = sum(1 for tg in explicit_target_genres if tg.lower() in m_genres_lower)
+                if genre_hits > 0:
+                    thematic_rel = min(1.0, thematic_rel + 0.20 * genre_hits)
                 else:
-                    thematic_rel = max(0.10, thematic_rel - 0.40)
+                    thematic_rel = max(0.05, thematic_rel - 0.40)
 
-            # Predict baseline personal likeness score
-            if ai_model:
-                base_score = predict_movie_score(
-                    ai_model, ai_columns, ai_vectorizer, ai_encoders,
-                    genres=m_genres, context=user_context, overview=m_overview,
-                    runtime=m.get('runtime')
-                )
-                for hated in hated_movies:
-                    if (hated in m_norm_title) or (m_norm_title in hated):
-                        base_score = max(0.5, base_score - 2.5)
-                        break
-            else:
-                base_score = 3.8
+            base_score = raw_scores[idx]
+            # Exact title equality check (fixes hated-movie substring penalty bug on 'Up' vs 'Upgrade')
+            if m_norm_title in hated_set:
+                base_score = max(0.5, base_score - 2.5)
 
             multiplier = 0.30 + (0.75 * thematic_rel)
             if thematic_rel >= 0.85:
                 multiplier += 0.10
             final_ai_score = round(min(5.0, max(0.5, base_score * multiplier)), 2)
 
+            # Multi-concept specificity boost
+            concept_bonus = (concept_hits * 0.15) + (genre_hits * 0.10)
+
+            # Unified rank score
+            rank_score = (thematic_rel * 0.50) + ((final_ai_score / 5.0) * 0.30) + concept_bonus
+
             m_copy = dict(m)
             m_copy['id'] = m_id
             m_copy['movie_id'] = m_id
             m_copy['ai_score'] = final_ai_score
+            m_copy['rank_score'] = round(rank_score, 4)
             m_copy['thematic_relevance'] = thematic_rel
             m_copy['vibe_pitch'] = vibe_pitch
             m_copy['is_direct_match'] = thematic_rel >= 0.80
             m_copy['is_watched'] = False
 
-            if not ai_matches or thematic_rel >= 0.35:
+            if not ai_matches or thematic_rel >= 0.30:
                 candidates.append(m_copy)
 
         if not candidates:
@@ -326,6 +353,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                 m_copy = dict(m)
                 m_copy['id'] = m.get('movie_id')
                 m_copy['ai_score'] = 3.5
+                m_copy['rank_score'] = 0.5
                 candidates.append(m_copy)
 
         if streaming_filter != "All Platforms":
@@ -339,7 +367,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             with ThreadPoolExecutor(max_workers=8) as executor:
                 candidates = [m for m in executor.map(check_stream, candidates) if m]
 
-        candidates.sort(key=lambda x: (x.get('thematic_relevance', 0), x.get('ai_score', 0)), reverse=True)
+        candidates.sort(key=lambda x: x.get('rank_score', 0), reverse=True)
         return candidates
 
     direct_matches = []
@@ -560,29 +588,28 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
         with ThreadPoolExecutor(max_workers=8) as executor:
             all_candidates = [m for m in executor.map(check_stream, all_candidates) if m]
 
-    finalPicks = []
     for movie in all_candidates:
-        genres = [idToGenre[g] for g in movie.get('genre_ids', []) if g in idToGenre]
-        overview = movie.get('overview', '')
+        movie['genres'] = [idToGenre[g] for g in movie.get('genre_ids', []) if g in idToGenre]
+
+    # Vectorized batch prediction for all candidates (< 5ms)
+    raw_scores = predict_movie_scores_batch(
+        ai_model, ai_columns, ai_vectorizer, ai_encoders,
+        all_candidates, context=user_context
+    ) if ai_model else [3.5] * len(all_candidates)
+
+    hated_set = {titleNormalize(h) for h in hated_movies if h}
+    finalPicks = []
+    for idx, movie in enumerate(all_candidates):
         title_norm = titleNormalize(movie.get('title', ''))
         thematic_weight = movie.get('thematic_weight', 1.0)
+        raw_score = raw_scores[idx]
         
-        if ai_model:
-            raw_score = predict_movie_score(
-                ai_model, ai_columns, ai_vectorizer, ai_encoders,
-                genres=genres, context=user_context, overview=overview,
-                runtime=movie.get('runtime')
-            )
-            for hated in hated_movies:
-                if (hated in title_norm) or (title_norm in hated):
-                    raw_score = max(0.5, raw_score - 2.5)
-                    break
-            # Apply slight thematic boost if film was specifically matched to the keyword/theme
-            score = round(min(5.0, raw_score * thematic_weight), 2)
-            movie['ai_score'] = score
-        else:
-            movie['ai_score'] = round(min(5.0, 3.5 * thematic_weight), 2)
-            
+        # Exact title equality check (fixes hated-movie substring penalty bug)
+        if title_norm in hated_set:
+            raw_score = max(0.5, raw_score - 2.5)
+
+        score = round(min(5.0, raw_score * thematic_weight), 2)
+        movie['ai_score'] = score
         finalPicks.append(movie)
 
     # Sort unwatched recommendation results by AI score while keeping direct search matches prominent
