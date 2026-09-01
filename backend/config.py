@@ -2,7 +2,7 @@ import os
 import sys
 import shutil
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 
 def get_base_dir():
     if getattr(sys, 'frozen', False):
@@ -40,16 +40,17 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     except Exception: pass
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-gemini_model = None
+gemini_client = None
 if GEMINI_API_KEY and GEMINI_API_KEY != 'YOUR_GEMINI_API_KEY_HERE':
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-2.5-flash')
-        print("[OK] Gemini AI initialized (gemini-2.5-flash).")
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        print("[OK] Google GenAI client initialized.")
     except Exception as e:
         print(f"[WARN] Gemini init warning: {e}")
 else:
     print("[INFO] GEMINI_API_KEY not set. Using local mood & genre heuristics fallback.")
+
+gemini_model = gemini_client
 
 def get_user_data_path(filename):
     appdata = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'MBM_Recommender')

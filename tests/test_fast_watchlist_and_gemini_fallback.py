@@ -80,30 +80,20 @@ class TestFastWatchlistAndGeminiFallback(unittest.TestCase):
         """Test that if the first model's quota is depleted, the request cascades to the next model."""
         from unittest.mock import patch, Mock
 
-        # Mock responses
-        mock_429_resp = Mock()
-        mock_429_resp.status_code = 429
+        mock_client = Mock()
+        mock_resp_success = Mock()
+        mock_resp_success.text = '{"genres": ["Horror", "Thriller"], "search_query": "paranormal house", "suggested_titles": [{"title": "The Conjuring", "year": "2013", "vibe_pitch": "Haunted house"}]}'
 
-        mock_200_resp = Mock()
-        mock_200_resp.status_code = 200
-        mock_200_resp.json.return_value = {
-            'candidates': [{
-                'content': {
-                    'parts': [{
-                        'text': '{"genres": ["Horror", "Thriller"], "search_query": "paranormal house", "suggested_titles": ["The Conjuring"]}'
-                    }]
-                }
-            }]
-        }
+        # The side_effect will raise an exception for the first model, and return response for the second model
+        mock_client.models.generate_content.side_effect = [
+            Exception("429 Resource Exhausted"),
+            mock_resp_success
+        ]
 
-        # The side_effect will return 429 for the first model, and 200 for the second model
-        with patch('requests.post') as mock_post:
-            mock_post.side_effect = [mock_429_resp, mock_200_resp]
-
-            # We use a dummy key to run the Gemini request path
+        with patch('backend.gemini_client._get_genai_client', return_value=mock_client):
             res = interpret_query_with_ai("scary ghost house", custom_api_key="DUMMY_KEY")
 
-            self.assertEqual(mock_post.call_count, 2)
+            self.assertEqual(mock_client.models.generate_content.call_count, 2)
             self.assertIn('genres', res)
             self.assertEqual(res['genres'], ['Horror', 'Thriller'])
             self.assertEqual(res['search_query'], 'paranormal house')

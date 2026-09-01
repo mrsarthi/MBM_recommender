@@ -110,17 +110,12 @@ class TestGeminiTastePipeline(unittest.TestCase):
             ]
         }
 
-        mock_200 = Mock()
-        mock_200.status_code = 200
-        mock_200.json.return_value = {
-            'candidates': [{
-                'content': {
-                    'parts': [{'text': json.dumps(mock_response)}]
-                }
-            }]
-        }
+        mock_client = Mock()
+        mock_resp = Mock()
+        mock_resp.text = json.dumps(mock_response)
+        mock_client.models.generate_content.return_value = mock_resp
 
-        with patch('requests.post', return_value=mock_200):
+        with patch('backend.gemini_client._get_genai_client', return_value=mock_client):
             res = interpret_query_with_ai(
                 "atmospheric rainy neo noir sci-fi",
                 custom_api_key="TEST_KEY",
@@ -220,17 +215,12 @@ class TestGeminiTastePipeline(unittest.TestCase):
             'overview': 'A genetically imperfect man dreams of traveling to the stars.'
         }
 
-        mock_200 = Mock()
-        mock_200.status_code = 200
-        mock_200.json.return_value = {
-            'candidates': [{
-                'content': {
-                    'parts': [{'text': '{"pitch": "Since you loved Blade Runner 2049, Gattaca gives you that same smart, elegant dystopian vision in just 106 minutes."}'}]
-                }
-            }]
-        }
+        mock_client = Mock()
+        mock_resp = Mock()
+        mock_resp.text = '{"pitch": "Since you loved Blade Runner 2049, Gattaca gives you that same smart, elegant dystopian vision in just 106 minutes."}'
+        mock_client.models.generate_content.return_value = mock_resp
 
-        with patch('requests.post', return_value=mock_200):
+        with patch('backend.gemini_client._get_genai_client', return_value=mock_client):
             pitch = generate_matchmaker_pitch(
                 sample_winner,
                 user_taste=anchors,

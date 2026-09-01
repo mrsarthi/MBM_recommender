@@ -2074,4 +2074,28 @@ function toggleLetterboxdFallback(e) {
     }
 }
 
+// Register Service Worker for offline PWA resiliency & poster caching
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/service-worker.js').then((reg) => {
+            console.log('[MBMR] Service Worker registered with scope:', reg.scope);
+        }).catch((err) => {
+            console.warn('[MBMR] Service Worker registration failed:', err);
+        });
+    });
+
+    window.addEventListener('online', () => {
+        if (typeof showNotification === 'function') {
+            showNotification('Connection restored. Back online!', 'success');
+        }
+    });
+
+    window.addEventListener('offline', () => {
+        if (typeof showNotification === 'function') {
+            showNotification('You are offline. Cached watchlist & shell available.', 'info');
+        }
+    });
+}
+
+
 

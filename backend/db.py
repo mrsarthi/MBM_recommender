@@ -11,6 +11,7 @@ from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, execute_values
 import pandas as pd
 from backend.config import DATABASE_URL, ENCRYPTION_KEY
+from backend.logger import logger, log_security_event
 
 def get_encryption_fernet():
     key = ENCRYPTION_KEY
@@ -457,6 +458,10 @@ def verify_user_pin(username: str, pin: str):
                 updated_lock = cur.fetchone()
                 conn.commit()
                 if updated_lock and updated_lock.get('failed_attempts', 0) >= 5:
+                    log_security_event('ACCOUNT_LOCKOUT_TRIGGERED', {
+                        'username': clean_user,
+                        'failed_attempts': updated_lock.get('failed_attempts')
+                    }, level='warning')
                     return False, "Account locked for 15 minutes due to too many failed attempts.", None
                 return False, "Invalid credentials", None
             

@@ -13,6 +13,8 @@ from socketserver import ThreadingMixIn
 import pandas as pd
 
 from backend.config import BASE_DIR, TMDB_KEY, GEMINI_API_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME, SESSION_SECRET
+from backend.rate_limiter import rate_limiter
+from backend.logger import logger, log_security_event, log_auth_attempt, log_rate_limit_blocked
 
 SESSION_EXPIRY_SECONDS = 30 * 86400  # 30 days
 
@@ -178,6 +180,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             "img-src 'self' data: https://image.tmdb.org https://a.ltrbxd.com; "
             "connect-src 'self' https://api.themoviedb.org https://generativelanguage.googleapis.com;"
         )
+        if getattr(self, 'path', '').startswith('/service-worker.js'):
+            self.send_header('Service-Worker-Allowed', '/')
         super().end_headers()
 
     def do_OPTIONS(self):
@@ -202,10 +206,55 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _get_client_identifier(self) -> str:
+        # Check X-Forwarded-For if behind reverse proxy / load balancer (Render, Vercel)
+        xff = self.headers.get('X-Forwarded-For')
+        if xff:
+            ip = xff.split(',')[0].strip()
+        else:
+            ip = self.client_address[0] if (self.client_address and len(self.client_address) > 0) else '127.0.0.1'
+        
+        # If session bearer token or custom token header present, append for user-level granularity
+        auth_header = self.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ', 1)[1].strip()
+            return f"{ip}:{token[:16]}"
+        session_hdr = self.headers.get('X-Session-Token', '')
+        if session_hdr:
+            return f"{ip}:{session_hdr[:16]}"
+        return ip
+
+    def _enforce_rate_limit(self, path: str) -> bool:
+        if not path.startswith('/api/'):
+            return True
+        ident = self._get_client_identifier()
+        allowed, retry_after = rate_limiter.is_allowed(ident, path)
+        if not allowed:
+            log_rate_limit_blocked(ident, path, retry_after)
+            self.send_response(429)
+            self.send_header('Retry-After', str(retry_after))
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            allowed_origin = self._get_allowed_origin()
+            if allowed_origin:
+                self.send_header('Access-Control-Allow-Origin', allowed_origin)
+                self.send_header('Access-Control-Allow-Credentials', 'true')
+            body = json.dumps({
+                'error': 'Too many requests. Please slow down and try again.',
+                'retry_after': retry_after
+            }).encode('utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
+        return True
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
+
+        if not self._enforce_rate_limit(path):
+            return
 
         if path == '/api/status':
             self._handle_status(query)
@@ -229,6 +278,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        if not self._enforce_rate_limit(path):
+            return
+
         content_length = int(self.headers.get('Content-Length', 0))
         
         # Max size check: 10MB
@@ -317,11 +370,14 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
     def _handle_login(self, body):
         username = (body.get('username') or '').strip().lstrip('@').lower()
         pin = str(body.get('pin') or '').strip()
+        client_ip = self._get_client_identifier()
         if not username or not pin:
+            log_auth_attempt(username or 'anonymous', client_ip, False, "Missing username or PIN")
             self._send_json({'success': False, 'message': 'Username and PIN are required'}, 400)
             return
 
         ok, msg, user = verify_user_pin(username, pin)
+        log_auth_attempt(username, client_ip, ok, msg if not ok else None)
         if ok and user:
             session_token = create_session_token(user['username'])
             self._send_json({

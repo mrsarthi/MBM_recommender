@@ -1,24 +1,54 @@
 import os
 import re
+import time
+import threading
 import pandas as pd
 import requests
-import requests_cache
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from backend.config import TMDB_KEY, TMDB_BASE_URL, PROFILE_PATH, APP_MEMORY_FILE
 from backend.predictions import predict_movie_score, get_watch_providers
 
-# Cached HTTP session with automated connection retry
-http_session = requests_cache.CachedSession('tmdb_cache', backend='sqlite', expire_after=604800)
-retry_strategy = Retry(
-    total=3,
-    backoff_factor=0.5,
-    status_forcelist=[429, 500, 502, 503, 504],
-    raise_on_status=False
-)
-adapter = HTTPAdapter(max_retries=retry_strategy)
-http_session.mount("https://", adapter)
-http_session.mount("http://", adapter)
+class SimpleCachedSession:
+    """Thread-safe in-memory cache on top of requests.Session with connection pooling and retries."""
+    def __init__(self, ttl_seconds=604800):
+        self._session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            raise_on_status=False
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=25, pool_maxsize=25)
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
+        self._cache = {}
+        self._lock = threading.Lock()
+        self._ttl = ttl_seconds
+
+    def get(self, url, params=None, timeout=6.0, **kwargs):
+        param_tuple = tuple(sorted(params.items())) if params else ()
+        cache_key = (url, param_tuple)
+        now = time.time()
+
+        with self._lock:
+            if cache_key in self._cache:
+                resp_obj, exp = self._cache[cache_key]
+                if now < exp:
+                    return resp_obj
+
+        resp = self._session.get(url, params=params, timeout=timeout, **kwargs)
+        if resp.status_code == 200:
+            with self._lock:
+                self._cache[cache_key] = (resp, now + self._ttl)
+                if len(self._cache) > 2000:
+                    oldest_keys = sorted(self._cache.keys(), key=lambda k: self._cache[k][1])[:500]
+                    for k in oldest_keys:
+                        del self._cache[k]
+        return resp
+
+# Thread-safe cached HTTP session with connection pooling
+http_session = SimpleCachedSession(ttl_seconds=604800)
 
 def titleNormalize(title):
     clean = re.sub(r'^Poster for\s+', '', str(title), flags=re.IGNORECASE).strip()

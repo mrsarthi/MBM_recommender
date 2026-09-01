@@ -1,8 +1,9 @@
 import os
 import json
 import re
-import requests
-from backend.config import GEMINI_API_KEY, gemini_model
+from google import genai
+from google.genai import types
+from backend.config import GEMINI_API_KEY, gemini_client
 
 VALID_GENRES = [
     'Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary',
@@ -12,11 +13,23 @@ VALID_GENRES = [
 
 # Verified active models with available quota in priority order
 CASCADE_MODELS = [
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
     'gemini-flash-lite-latest',
     'gemini-3.1-flash-lite',
-    'gemini-3.5-flash-lite',
-    'gemini-2.5-flash'
+    'gemini-3.5-flash-lite'
 ]
+
+def _get_genai_client(active_key=None):
+    key = active_key or GEMINI_API_KEY
+    if not key or key in ('YOUR_GEMINI_API_KEY_HERE', ''):
+        return None
+    if active_key == GEMINI_API_KEY and gemini_client is not None:
+        return gemini_client
+    try:
+        return genai.Client(api_key=key)
+    except Exception:
+        return None
 
 def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None):
     """
@@ -25,7 +38,11 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
     Cascades across active Gemini models if quota is exhausted on any single model.
     """
     active_key = custom_api_key or GEMINI_API_KEY
-    if not active_key:
+    if not active_key or active_key == 'YOUR_GEMINI_API_KEY_HERE':
+        return {'genres': _fallback_mood_match(user_input), 'search_query': user_input.strip(), 'suggested_titles': []}
+
+    client = _get_genai_client(active_key)
+    if not client:
         return {'genres': _fallback_mood_match(user_input), 'search_query': user_input.strip(), 'suggested_titles': []}
 
     # Format user taste context if available
@@ -67,50 +84,47 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
 
     for model_name in CASCADE_MODELS:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={active_key}"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.3,
-                    "maxOutputTokens": 1000,
-                    "responseMimeType": "application/json"
-                }
-            }
-            resp = requests.post(url, json=payload, timeout=5.0)
-            if resp.status_code == 200:
-                raw = resp.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-                if raw.startswith("```json"): raw = raw[7:-3].strip()
-                elif raw.startswith("```"): raw = raw[3:-3].strip()
-
-                data = json.loads(raw)
-                data['genres'] = [g for g in data.get('genres', []) if g in VALID_GENRES]
-                
-                # Normalize suggested_titles format
-                raw_titles = data.get('suggested_titles', [])
-                normalized_titles = []
-                for item in raw_titles:
-                    if isinstance(item, dict) and item.get('title'):
-                        normalized_titles.append({
-                            'title': str(item.get('title', '')).strip(),
-                            'year': str(item.get('year', '')).strip(),
-                            'vibe_pitch': str(item.get('vibe_pitch', '')).strip()
-                        })
-                    elif isinstance(item, str) and item.strip():
-                        normalized_titles.append({
-                            'title': item.strip(),
-                            'year': '',
-                            'vibe_pitch': ''
-                        })
-                data['suggested_titles'] = normalized_titles
-
-                if not data['genres'] and not data.get('search_query') and not data.get('suggested_titles'):
-                    data['genres'] = _fallback_mood_match(user_input)
-                if not data.get('search_query'):
-                    data['search_query'] = user_input.strip()
-                return data
-            else:
-                # Quota or rate-limit error, cascade to next model in list
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=1000,
+                    response_mime_type="application/json"
+                )
+            )
+            raw = (response.text or '').strip()
+            if not raw:
                 continue
+            if raw.startswith("```json"): raw = raw[7:-3].strip()
+            elif raw.startswith("```"): raw = raw[3:-3].strip()
+
+            data = json.loads(raw)
+            data['genres'] = [g for g in data.get('genres', []) if g in VALID_GENRES]
+            
+            # Normalize suggested_titles format
+            raw_titles = data.get('suggested_titles', [])
+            normalized_titles = []
+            for item in raw_titles:
+                if isinstance(item, dict) and item.get('title'):
+                    normalized_titles.append({
+                        'title': str(item.get('title', '')).strip(),
+                        'year': str(item.get('year', '')).strip(),
+                        'vibe_pitch': str(item.get('vibe_pitch', '')).strip()
+                    })
+                elif isinstance(item, str) and item.strip():
+                    normalized_titles.append({
+                        'title': item.strip(),
+                        'year': '',
+                        'vibe_pitch': ''
+                    })
+            data['suggested_titles'] = normalized_titles
+
+            if not data['genres'] and not data.get('search_query') and not data.get('suggested_titles'):
+                data['genres'] = _fallback_mood_match(user_input)
+            if not data.get('search_query'):
+                data['search_query'] = user_input.strip()
+            return data
         except Exception:
             continue
 
@@ -137,7 +151,11 @@ def generate_matchmaker_pitch(movie_dict, user_taste=None, duration_pref='Any', 
         f"At {runtime or 'feature'} min, this {genres_str or 'watchlist'} pick delivers on your mood and unwinds decision fatigue."
     )
 
-    if not active_key:
+    if not active_key or active_key == 'YOUR_GEMINI_API_KEY_HERE':
+        return fallback_pitch
+
+    client = _get_genai_client(active_key)
+    if not client:
         return fallback_pitch
 
     taste_context_str = ""
@@ -159,24 +177,24 @@ def generate_matchmaker_pitch(movie_dict, user_taste=None, duration_pref='Any', 
 
     for model_name in CASCADE_MODELS:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={active_key}"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.4,
-                    "maxOutputTokens": 200,
-                    "responseMimeType": "application/json"
-                }
-            }
-            resp = requests.post(url, json=payload, timeout=3.5)
-            if resp.status_code == 200:
-                raw = resp.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-                if raw.startswith("```json"): raw = raw[7:-3].strip()
-                elif raw.startswith("```"): raw = raw[3:-3].strip()
-                data = json.loads(raw)
-                pitch = data.get('pitch', '').strip()
-                if pitch:
-                    return pitch
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.4,
+                    max_output_tokens=200,
+                    response_mime_type="application/json"
+                )
+            )
+            raw = (response.text or '').strip()
+            if not raw:
+                continue
+            if raw.startswith("```json"): raw = raw[7:-3].strip()
+            elif raw.startswith("```"): raw = raw[3:-3].strip()
+            data = json.loads(raw)
+            pitch = data.get('pitch', '').strip()
+            if pitch:
+                return pitch
         except Exception:
             continue
 
@@ -192,7 +210,11 @@ def filter_and_rank_watchlist_with_ai(user_input, watchlist_movies, custom_api_k
         return {}
 
     active_key = custom_api_key or GEMINI_API_KEY
-    if not active_key:
+    if not active_key or active_key == 'YOUR_GEMINI_API_KEY_HERE':
+        return _fallback_watchlist_relevance(user_input, watchlist_movies)
+
+    client = _get_genai_client(active_key)
+    if not client:
         return _fallback_watchlist_relevance(user_input, watchlist_movies)
 
     # Format compact watchlist candidate lines (up to 80 items)
@@ -236,34 +258,34 @@ def filter_and_rank_watchlist_with_ai(user_input, watchlist_movies, custom_api_k
 
     for model_name in CASCADE_MODELS:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={active_key}"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.2,
-                    "maxOutputTokens": 1200,
-                    "responseMimeType": "application/json"
-                }
-            }
-            resp = requests.post(url, json=payload, timeout=6.0)
-            if resp.status_code == 200:
-                raw = resp.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
-                if raw.startswith("```json"): raw = raw[7:-3].strip()
-                elif raw.startswith("```"): raw = raw[3:-3].strip()
-                data = json.loads(raw)
-                matches_list = data.get('matches', [])
-                result_map = {}
-                for item in matches_list:
-                    mid = item.get('movie_id')
-                    try:
-                        mid = int(mid)
-                        rel = float(item.get('relevance', 7)) / 10.0
-                        pitch = str(item.get('vibe_pitch', '')).strip()
-                        result_map[mid] = {'relevance': min(1.0, max(0.1, rel)), 'vibe_pitch': pitch}
-                    except (ValueError, TypeError):
-                        continue
-                if result_map:
-                    return result_map
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=1200,
+                    response_mime_type="application/json"
+                )
+            )
+            raw = (response.text or '').strip()
+            if not raw:
+                continue
+            if raw.startswith("```json"): raw = raw[7:-3].strip()
+            elif raw.startswith("```"): raw = raw[3:-3].strip()
+            data = json.loads(raw)
+            matches_list = data.get('matches', [])
+            result_map = {}
+            for item in matches_list:
+                mid = item.get('movie_id')
+                try:
+                    mid = int(mid)
+                    rel = float(item.get('relevance', 7)) / 10.0
+                    pitch = str(item.get('vibe_pitch', '')).strip()
+                    result_map[mid] = {'relevance': min(1.0, max(0.1, rel)), 'vibe_pitch': pitch}
+                except (ValueError, TypeError):
+                    continue
+            if result_map:
+                return result_map
         except Exception:
             continue
 

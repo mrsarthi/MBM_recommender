@@ -13,6 +13,7 @@ from backend.db import (
 from backend.in_memory_model import train_user_model_in_memory, get_or_train_user_model
 from backend.jobs import start_onboarding_job, start_watchlist_sync_job, start_diary_sync_job, get_job_status
 from backend.recommender import analyze, titleNormalize
+from backend.config import TMDB_KEY, GEMINI_API_KEY
 
 import threading
 from backend.api import ThreadedHTTPServer, MBMRRequestHandler, create_session_token
@@ -161,11 +162,14 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
     def test_05_http_api_search_and_recommendation_robustness(self):
         # Test direct search for "swing girl" via API
         token = create_session_token('test_cinephile_99')
+        headers = {'Authorization': f'Bearer {token}'}
+        if TMDB_KEY:
+            headers['X-TMDB-Key'] = TMDB_KEY
         resp = requests.post(f"{API_URL}/api/recommend", json={
             'prompt': 'swing girl',
             'context': 'Alone',
             'streaming': 'All Platforms'
-        }, headers={'Authorization': f'Bearer {token}'}, timeout=35)
+        }, headers=headers, timeout=35)
         
         self.assertEqual(resp.status_code, 200)
         data = resp.json()

@@ -26,6 +26,8 @@ htmlcov/
 tmdb_cache.sqlite
 tmdb_cache.sqlite-shm
 tmdb_cache.sqlite-wal
+*.sqlite
+*.sqlite*
 app_memory_ids.csv
 config.json
 dataset/temp_letterboxd/

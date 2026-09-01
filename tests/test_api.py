@@ -86,7 +86,8 @@ class TestCineAIAPI(unittest.TestCase):
     def test_06_direct_movie_title_search(self):
         url = f"{BASE_URL}/api/recommend"
         payload = json.dumps({'prompt': 'Inception', 'context': 'Alone', 'streaming': 'All Platforms'}).encode('utf-8')
-        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {self.token}'})
+        token = create_session_token('test_unwatched_user')
+        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {token}'})
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
