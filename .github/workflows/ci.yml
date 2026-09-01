@@ -2,9 +2,9 @@ name: MBMR CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, tester ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, tester ]
 
 jobs:
   test:
