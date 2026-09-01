@@ -151,15 +151,18 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if not origin:
             return None
         origin = origin.strip().rstrip('/')
-        allowed = [
-            'https://mbm-recommender.vercel.app',
-            'https://mbmr.onrender.com',
-            'http://localhost:8899',
-            'http://127.0.0.1:8899',
-            'http://localhost:3000',
-            'http://127.0.0.1:3000'
-        ]
-        if origin in allowed:
+        if (
+            origin.endswith('.vercel.app') or
+            origin.endswith('.onrender.com') or
+            origin in [
+                'http://localhost:8899',
+                'http://127.0.0.1:8899',
+                'http://localhost:3000',
+                'http://127.0.0.1:3000',
+                'http://localhost:5173',
+                'http://127.0.0.1:5173'
+            ]
+        ):
             return origin
         return None
 
