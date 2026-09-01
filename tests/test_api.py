@@ -11,7 +11,7 @@ root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-from backend.api import ThreadedHTTPServer, CineAIRequestHandler
+from backend.api import ThreadedHTTPServer, CineAIRequestHandler, create_session_token
 from backend.config import LETTERBOXD_USERNAME
 
 TEST_PORT = 9988
@@ -24,6 +24,8 @@ class TestCineAIAPI(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.server.serve_forever)
         cls.thread.daemon = True
         cls.thread.start()
+        cls.user = LETTERBOXD_USERNAME or 'sarthi_watcher'
+        cls.token = create_session_token(cls.user)
         time.sleep(0.5)
 
     @classmethod
@@ -36,17 +38,17 @@ class TestCineAIAPI(unittest.TestCase):
 
     def test_01_api_status(self):
         url = f"{BASE_URL}/api/status"
-        req = urllib.request.Request(url)
+        req = urllib.request.Request(url, headers={'Authorization': f'Bearer {self.token}'})
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
-            self.assertIn(data.get('username'), ['guest', LETTERBOXD_USERNAME])
+            self.assertIn(data.get('username'), ['guest', self.user])
             self.assertIn('total_films', data)
             self.assertIn('model_status', data)
 
     def test_02_api_diary_filters(self):
         url = f"{BASE_URL}/api/diary?rating=All&sort=Newest+Log+First"
-        req = urllib.request.Request(url)
+        req = urllib.request.Request(url, headers={'Authorization': f'Bearer {self.token}'})
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
@@ -55,7 +57,7 @@ class TestCineAIAPI(unittest.TestCase):
 
     def test_03_api_taste_radar(self):
         url = f"{BASE_URL}/api/taste_radar"
-        req = urllib.request.Request(url)
+        req = urllib.request.Request(url, headers={'Authorization': f'Bearer {self.token}'})
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
@@ -65,7 +67,7 @@ class TestCineAIAPI(unittest.TestCase):
     def test_04_api_recommendation(self):
         url = f"{BASE_URL}/api/recommend"
         payload = json.dumps({'prompt': 'mind-bending sci-fi', 'context': 'Alone', 'streaming': 'All Platforms'}).encode('utf-8')
-        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {self.token}'})
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
@@ -84,7 +86,7 @@ class TestCineAIAPI(unittest.TestCase):
     def test_06_direct_movie_title_search(self):
         url = f"{BASE_URL}/api/recommend"
         payload = json.dumps({'prompt': 'Inception', 'context': 'Alone', 'streaming': 'All Platforms'}).encode('utf-8')
-        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {self.token}'})
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))

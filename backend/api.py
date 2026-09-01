@@ -5,36 +5,47 @@ import json
 import threading
 import time
 import urllib.parse
+import hmac
+import hashlib
 from collections import defaultdict
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import pandas as pd
 
-# IP + Username login rate limiter state (max 5 failures per 15 mins)
-_login_failures = defaultdict(list)
-_failures_lock = threading.Lock()
+from backend.config import BASE_DIR, TMDB_KEY, GEMINI_API_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME, SESSION_SECRET
 
-def check_login_rate_limit(ip, username):
-    now = time.time()
-    key = (ip, username.lower())
-    with _failures_lock:
-        _login_failures[key] = [t for t in _login_failures[key] if now - t < 900]
-        if len(_login_failures[key]) >= 5:
-            return False, int(900 - (now - _login_failures[key][0]))
-    return True, 0
+SESSION_EXPIRY_SECONDS = 30 * 86400  # 30 days
 
-def record_login_failure(ip, username):
-    now = time.time()
-    key = (ip, username.lower())
-    with _failures_lock:
-        _login_failures[key].append(now)
+def create_session_token(username: str) -> str:
+    clean_user = (username or '').strip().lstrip('@').lower()
+    if not clean_user:
+        return ""
+    ts = int(time.time())
+    payload = f"{clean_user}:{ts}"
+    sig = hmac.new(SESSION_SECRET.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256).hexdigest()
+    return f"{payload}:{sig}"
 
-def reset_login_failures(ip, username):
-    key = (ip, username.lower())
-    with _failures_lock:
-        _login_failures.pop(key, None)
-
-from backend.config import BASE_DIR, TMDB_KEY, GEMINI_API_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME
+def verify_session_token(token: str) -> tuple[bool, str]:
+    if not token or not isinstance(token, str):
+        return False, ""
+    parts = token.strip().split(':')
+    if len(parts) != 3:
+        return False, ""
+    username, ts_str, sig = parts
+    try:
+        ts = int(ts_str)
+    except ValueError:
+        return False, ""
+    
+    # Check expiration (30 days validity, 5 mins future clock skew allowance)
+    if time.time() - ts > SESSION_EXPIRY_SECONDS or ts > time.time() + 300:
+        return False, ""
+    
+    payload = f"{username}:{ts}"
+    expected_sig = hmac.new(SESSION_SECRET.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        return False, ""
+    return True, username
 from backend.db import (
     init_db, get_user, get_or_create_user, verify_user_pin, get_user_diary,
     get_user_watchlist, add_to_user_watchlist, remove_from_user_watchlist,
@@ -64,20 +75,32 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         frontend_dir = os.path.join(BASE_DIR, 'frontend')
         super().__init__(*args, directory=frontend_dir, **kwargs)
 
-    def _get_request_user(self, data=None):
-        data = data or {}
-        if isinstance(data, dict) and 'username' in data:
-            val = data.get('username')
-            if isinstance(val, list): val = val[0] if val else ''
-            val_str = str(val).strip().lstrip('@').lower() if val else ''
-            if val_str and val_str != 'guest':
-                return val_str
-        header_u = self.headers.get('X-Letterboxd-User')
-        if header_u is not None:
-            clean_h = header_u.strip().lstrip('@').lower()
-            if clean_h and clean_h != 'guest':
-                return clean_h
-            return ''
+    def _get_request_user(self, query=None, body=None, require_auth=False):
+        """
+        Authenticates caller identity using HMAC-signed session tokens.
+        1. Authorization: Bearer <session_token>
+        2. X-Session-Token: <session_token>
+        3. If require_auth is False (e.g. unauthenticated status/search), allows query/body user parameter.
+        """
+        auth_header = self.headers.get('Authorization', '')
+        token = ''
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:].strip()
+        if not token:
+            token = self.headers.get('X-Session-Token', '').strip()
+        
+        if token:
+            valid, user = verify_session_token(token)
+            if valid and user:
+                return user
+
+        if not require_auth:
+            if query and isinstance(query, dict):
+                u = query.get('user', [''])[0]
+                if u: return str(u).strip().lstrip('@').lower()
+            if body and isinstance(body, dict):
+                u = body.get('user') or body.get('username')
+                if u: return str(u).strip().lstrip('@').lower()
         return ''
 
     def _get_request_keys(self, user=None, body=None, query=None, allow_env_fallback=True):
@@ -149,7 +172,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         self.send_header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
         self.send_header('Content-Security-Policy', 
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
             "font-src 'self' https://fonts.gstatic.com; "
             "img-src 'self' data: https://image.tmdb.org https://a.ltrbxd.com; "
@@ -164,7 +187,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', allowed_origin)
             self.send_header('Access-Control-Allow-Credentials', 'true')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-TMDB-Key, X-Gemini-Key, X-Letterboxd-User, X-User-Pin')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token, X-TMDB-Key, X-Gemini-Key, X-Letterboxd-User, X-User-Pin')
         self.end_headers()
 
     def _send_json(self, data, status=200):
@@ -250,14 +273,14 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
     # ── Auth & Onboarding Handlers ──
 
     def _handle_update_keys(self, body):
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
+        if not user:
+            self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
+            return
+
         pin = str(body.get('pin') or '').strip()
         tmdb = (body.get('tmdb_key') or self.headers.get('X-TMDB-Key') or '').strip()
         gemini = (body.get('gemini_key') or self.headers.get('X-Gemini-Key') or '').strip()
-
-        if not user:
-            self._send_json({'success': False, 'message': 'Username is required'}, 400)
-            return
 
         # Verify PIN before updating keys
         ok, msg, user_obj = verify_user_pin(user, pin)
@@ -276,42 +299,35 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'success': False, 'message': 'Failed to update user keys'}, 500)
 
     def _handle_import_csv(self, body):
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
+        if not user:
+            self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
+            return
+
         csv_text = body.get('csv_content', '')
         is_wl = bool(body.get('is_watchlist', False))
         tmdb = (body.get('tmdb_key') or self.headers.get('X-TMDB-Key') or '').strip()
-        if not user or not csv_text:
-            self._send_json({'success': False, 'message': 'Username and csv_content required'}, 400)
+        if not csv_text:
+            self._send_json({'success': False, 'message': 'csv_content required'}, 400)
             return
 
-        # Runs in the background and reports through /api/onboarding/status: a full
-        # export needs hundreds of TMDB lookups and would otherwise time out.
         job_id = start_csv_import_job(user, csv_text, is_watchlist=is_wl, tmdb_key=tmdb)
         self._send_json({'success': True, 'job_id': job_id, 'message': 'Import started'})
 
     def _handle_login(self, body):
         username = (body.get('username') or '').strip().lstrip('@').lower()
         pin = str(body.get('pin') or '').strip()
-        if not username:
-            self._send_json({'success': False, 'message': 'Username is required'}, 400)
-            return
-
-        # Resolve IP for rate limiting
-        ip = self.headers.get('X-Forwarded-For', self.client_address[0]).split(',')[0].strip()
-        allowed, wait_sec = check_login_rate_limit(ip, username)
-        if not allowed:
-            self._send_json({
-                'success': False,
-                'message': f'Too many failed attempts. Please wait {wait_sec} seconds before trying again.'
-            }, 429)
+        if not username or not pin:
+            self._send_json({'success': False, 'message': 'Username and PIN are required'}, 400)
             return
 
         ok, msg, user = verify_user_pin(username, pin)
         if ok and user:
-            reset_login_failures(ip, username)
+            session_token = create_session_token(user['username'])
             self._send_json({
                 'success': True,
                 'message': 'Login successful',
+                'session_token': session_token,
                 'user': {
                     'username': user['username'],
                     'has_tmdb': bool(user.get('tmdb_key')),
@@ -319,7 +335,6 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 }
             })
         else:
-            record_login_failure(ip, username)
             self._send_json({'success': False, 'message': msg or 'Invalid credentials'}, 401)
 
     def _handle_onboarding_start(self, body):
@@ -338,6 +353,15 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'success': False, 'message': 'A 4-6 digit PIN is required to secure your profile for multi-device login'}, 400)
             return
 
+        # Security: Prevent account takeover by verifying if user already exists
+        existing_user = get_user(username)
+        if existing_user and existing_user.get('pin_hash'):
+            self._send_json({
+                'success': False,
+                'message': 'Username is already registered. Please log in with your PIN to access your account.'
+            }, 409)
+            return
+
         job_id = start_onboarding_job(
             username, pin=pin, tmdb_key=tmdb, gemini_key=gemini,
             skip_scrape=skip_scrape, favorites=favorites
@@ -354,6 +378,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'error': 'job_id is required'}, 400)
             return
         status_info = get_job_status(job_id)
+        if status_info.get('status') == 'completed' and status_info.get('username'):
+            status_info['session_token'] = create_session_token(status_info['username'])
         self._send_json(status_info)
 
     # ── User Status & Data Handlers ──
@@ -396,9 +422,9 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_diary(self, query):
-        user = self._get_request_user(query)
+        user = self._get_request_user(query, require_auth=True)
         if not user:
-            self._send_json({'films': [], 'total': 0})
+            self._send_json({'error': 'Unauthorized', 'message': 'Authentication required. Please log in.', 'films': [], 'total': 0}, 401)
             return
 
         search = query.get('search', [''])[0].strip().lower()
@@ -446,8 +472,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'error': 'Internal server error', 'films': [], 'total': 0}, 500)
 
     def _handle_taste_radar(self, query=None):
-        user = self._get_request_user(query)
+        user = self._get_request_user(query, require_auth=True)
         if not user:
+            self._send_json({'error': 'Unauthorized', 'message': 'Authentication required', 'genres': [], 'badges': []}, 401)
+            return
             self._send_json({'radar': {}, 'badges': []})
             return
 
@@ -476,14 +504,15 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'radar': [], 'badges': [], 'error': 'Internal server error'})
 
     def _handle_get_watchlist(self, query):
-        user = self._get_request_user(query)
+        user = self._get_request_user(query, require_auth=True)
         if not user:
-            self._send_json({'watchlist': [], 'total': 0})
+            self._send_json({'error': 'Unauthorized', 'message': 'Authentication required. Please log in.', 'watchlist': [], 'total': 0}, 401)
             return
 
         cluster_filter = query.get('cluster', ['All'])[0]
         sort_mode = query.get('sort', ['Highest Predicted ★'])[0]
         platform_filter = query.get('platform', ['All Platforms'])[0]
+        tmdb_key, _ = self._get_request_keys(user=user, query=query)
 
         ai_model, ai_columns, ai_vectorizer, ai_encoders = get_or_train_user_model(user)
 
@@ -532,19 +561,22 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 items = [m for m in items if cluster_filter in m.get('clusters', [])]
 
             # Filter by Streaming Platform
-            if platform_filter != 'All Platforms':
-                filtered = []
-                for m in items:
-                    provs = get_watch_providers(m.get('movie_id'))
-                    if any(platform_filter.lower() in p.lower() for p in provs):
-                        m['providers'] = provs
-                        filtered.append(m)
-                items = filtered
+            if platform_filter != 'All Platforms' and items:
+                def check_p(m):
+                    p_list = get_watch_providers(m.get('movie_id'), tmdb_key=tmdb_key)
+                    if any(platform_filter.lower() in p.lower() for p in p_list):
+                        m['providers'] = p_list
+                        return m
+                    return None
 
-            # Sort
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=8) as ex:
+                    items = [m for m in ex.map(check_p, items) if m]
+
+            # Sorting
             if sort_mode == 'Highest Predicted ★':
                 items.sort(key=lambda x: x.get('ai_score', 0), reverse=True)
-            elif sort_mode == 'Runtime (Shortest First)':
+            elif sort_mode == 'Shortest Runtime (< 100m)':
                 items.sort(key=lambda x: x.get('runtime', 999) if x.get('runtime', 0) > 0 else 999)
             elif sort_mode == 'Recently Added':
                 items.sort(key=lambda x: x.get('added_date', ''), reverse=True)
@@ -557,19 +589,19 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'error': 'Internal server error', 'watchlist': [], 'total': 0}, 500)
 
     def _handle_add_watchlist(self, body):
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
         if not user:
-            self._send_json({'success': False, 'message': 'User required'}, 400)
+            self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
             return
 
         ok, msg = add_to_user_watchlist(user, body)
         self._send_json({'success': ok, 'message': msg})
 
     def _handle_remove_watchlist(self, body):
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
         movie_id = body.get('movie_id') or body.get('id')
         if not user or not movie_id:
-            self._send_json({'success': False, 'message': 'User and movie_id required'}, 400)
+            self._send_json({'success': False, 'message': 'Authentication and movie_id required'}, 401 if not user else 400)
             return
 
         ok, msg = remove_from_user_watchlist(user, movie_id)
@@ -667,7 +699,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'error': 'Prompt is required'}, 400)
             return
 
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
+        if not user:
+            self._send_json({'error': 'Unauthorized', 'message': 'Authentication required. Please log in.'}, 401)
+            return
         context = body.get('context', 'Alone')
         streaming = body.get('streaming', 'All Platforms')
         source = body.get('source', 'all')
@@ -842,9 +877,9 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'error': 'Internal server error'}, 500)
 
     def _handle_log_movie(self, body):
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
         if not user:
-            self._send_json({'success': False, 'message': 'User required to log'}, 400)
+            self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
             return
 
         user_rec = get_or_create_user(user)
@@ -885,27 +920,27 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_sync_watchlist(self, body):
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
         if not user:
-            self._send_json({'success': False, 'message': 'Username required'})
+            self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
             return
         tmdb_key, _ = self._get_request_keys(user=user, body=body)
         job_id = start_watchlist_sync_job(user, tmdb_key=tmdb_key)
         self._send_json({'success': True, 'job_id': job_id, 'message': 'Watchlist sync started in background'})
 
     def _handle_sync_letterboxd(self, body):
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
         if not user:
-            self._send_json({'success': False, 'message': 'Username required'})
+            self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
             return
         tmdb_key, gemini_key = self._get_request_keys(user=user, body=body)
         job_id = start_onboarding_job(user, tmdb_key=tmdb_key, gemini_key=gemini_key)
         self._send_json({'success': True, 'job_id': job_id, 'message': 'Diary sync started in background'})
 
     def _handle_retrain(self, body=None):
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
         if not user:
-            self._send_json({'success': False, 'message': 'Username required'}, 400)
+            self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
             return
         invalidate_user_model(user)
         train_user_model_in_memory(user)

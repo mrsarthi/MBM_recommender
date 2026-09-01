@@ -15,7 +15,7 @@ from backend.jobs import start_onboarding_job, start_watchlist_sync_job, start_d
 from backend.recommender import analyze, titleNormalize
 
 import threading
-from backend.api import ThreadedHTTPServer, MBMRRequestHandler
+from backend.api import ThreadedHTTPServer, MBMRRequestHandler, create_session_token
 
 # Own port and own server: the suite must not depend on a dev server already running.
 API_PORT = 9899
@@ -160,11 +160,12 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
 
     def test_05_http_api_search_and_recommendation_robustness(self):
         # Test direct search for "swing girl" via API
+        token = create_session_token('test_cinephile_99')
         resp = requests.post(f"{API_URL}/api/recommend", json={
             'prompt': 'swing girl',
             'context': 'Alone',
             'streaming': 'All Platforms'
-        }, timeout=35)
+        }, headers={'Authorization': f'Bearer {token}'}, timeout=35)
         
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -188,9 +189,10 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
         self.assertEqual(data['user']['username'], 'test_cinephile_99')
 
     def test_07_async_onboarding_job_status(self):
-        # Start onboarding job for guest
+        # Start onboarding job for fresh user
+        fresh_user = f"test_job_runner_{int(time.time() * 1000)}"
         resp = requests.post(f"{API_URL}/api/onboarding/start", json={
-            'username': 'test_job_runner',
+            'username': fresh_user,
             'pin': '9999'
         })
         self.assertEqual(resp.status_code, 200)
@@ -207,7 +209,8 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
 
     def test_08_import_csv_full_history(self):
         # Test importing a 5-film Letterboxd export CSV
-        unique_csv_user = f"csv_user_{int(time.time())}"
+        unique_csv_user = f"csv_user_{int(time.time() * 1000)}"
+        token = create_session_token(unique_csv_user)
         csv_sample = """Date,Name,Year,Letterboxd URI,Rating
 2026-08-01,Inception,2010,https://boxd.it/1sz2,5.0
 2026-08-02,Blade Runner 2049,2017,https://boxd.it/c6c2,4.5
@@ -219,7 +222,7 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
             'username': unique_csv_user,
             'csv_content': csv_sample,
             'is_watchlist': False
-        })
+        }, headers={'Authorization': f'Bearer {token}'})
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertTrue(data['success'])
@@ -291,13 +294,14 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
             }
 
             # Post recommendation request with source='watchlist'
+            token = create_session_token(test_username)
             resp = requests.post(f"{API_URL}/api/recommend", json={
                 'username': test_username,
                 'prompt': 'something scary and paranormal',
                 'context': 'Alone',
                 'streaming': 'All Platforms',
                 'source': 'watchlist'
-            })
+            }, headers={'Authorization': f'Bearer {token}'})
             
             self.assertEqual(resp.status_code, 200)
             data = resp.json()
@@ -526,7 +530,8 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
         upsert_movies_batch(movies)
         upsert_user_diary(uid, diary)
 
-        resp = requests.post(f"{API_URL}/api/retrain", json={'username': test_user})
+        token = create_session_token(test_user)
+        resp = requests.post(f"{API_URL}/api/retrain", json={'username': test_user}, headers={'Authorization': f'Bearer {token}'})
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertTrue(data.get('success'))

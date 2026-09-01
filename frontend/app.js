@@ -84,9 +84,16 @@ const MBMRStorage = {
 const _nativeFetch = window.fetch.bind(window);
 async function mbmrFetch(url, options = {}) {
     const username = await MBMRStorage.get('letterboxd_username');
+    const token = (await MBMRStorage.get('mbmr_session_token')) || localStorage.getItem('mbmr_session_token') || '';
 
     options.headers = options.headers || {};
-    if (username) options.headers['X-Letterboxd-User'] = username;
+    if (token) {
+        options.headers['Authorization'] = `Bearer ${token}`;
+        options.headers['X-Session-Token'] = token;
+    }
+    if (username) {
+        options.headers['X-Letterboxd-User'] = username;
+    }
 
     return _nativeFetch(url, options);
 }
@@ -1616,6 +1623,10 @@ async function submitLoginProfile() {
 
         // Save authenticated credentials locally
         await MBMRStorage.set('letterboxd_username', data.user.username);
+        if (data.session_token) {
+            await MBMRStorage.set('mbmr_session_token', data.session_token);
+            localStorage.setItem('mbmr_session_token', data.session_token);
+        }
 
         const syncInput = document.getElementById('sync-user-input');
         if (syncInput) syncInput.value = data.user.username;
@@ -1754,6 +1765,11 @@ async function completeOnboarding() {
                     if (pPct) pPct.textContent = '100%';
                     if (pTitle) pTitle.textContent = 'Profile Ready!';
                     if (pSub) pSub.textContent = 'Launching your personalized dashboard...';
+
+                    if (statusData.session_token) {
+                        await MBMRStorage.set('mbmr_session_token', statusData.session_token);
+                        localStorage.setItem('mbmr_session_token', statusData.session_token);
+                    }
 
                     const syncInput = document.getElementById('sync-user-input');
                     if (syncInput) syncInput.value = username;

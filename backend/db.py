@@ -10,14 +10,10 @@ import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, execute_values
 import pandas as pd
-from backend.config import DATABASE_URL
+from backend.config import DATABASE_URL, ENCRYPTION_KEY
 
 def get_encryption_fernet():
-    key = os.getenv('ENCRYPTION_KEY')
-    if not key:
-        db_url = os.getenv('DATABASE_URL', 'default_mbmr_secret_salt_12984')
-        derived = hashlib.pbkdf2_hmac('sha256', db_url.encode('utf-8'), b'mbmr_encryption_salt', 100000)
-        key = base64.urlsafe_b64encode(derived).decode('utf-8')
+    key = ENCRYPTION_KEY
     return Fernet(key.encode('utf-8'))
 
 def encrypt_key(val: str) -> str:
@@ -324,6 +320,8 @@ def init_db():
                 );
 
                 ALTER TABLE movies ADD COLUMN IF NOT EXISTS letterboxd_slug VARCHAR(255);
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts INT DEFAULT 0;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE NULL;
 
                 CREATE INDEX IF NOT EXISTS idx_movies_slug ON movies(letterboxd_slug);
                 CREATE INDEX IF NOT EXISTS idx_user_diary_user_id ON user_diary(user_id);
@@ -373,10 +371,11 @@ def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None, gem
             cur.execute("SELECT id, username, pin_hash, tmdb_key, gemini_key FROM users WHERE username = %s", (clean_user,))
             user = cur.fetchone()
             if user:
-                # Update keys or PIN if provided
+                # Security: If account already has a PIN hash set, DO NOT allow overwriting it blindly
+                existing_pin_hash = user.get('pin_hash')
                 updates = []
                 params = []
-                if pin:
+                if pin and not existing_pin_hash:
                     updates.append("pin_hash = %s")
                     params.append(hash_pin(pin))
                 if tmdb_key:
@@ -416,34 +415,71 @@ def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None, gem
         release_connection(conn)
 
 def verify_user_pin(username: str, pin: str):
-    clean_user = username.strip().lstrip('@').lower()
+    clean_user = (username or '').strip().lstrip('@').lower()
+    if not clean_user:
+        return False, "Invalid credentials", None
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, username, pin_hash, tmdb_key, gemini_key FROM users WHERE username = %s", (clean_user,))
+            cur.execute("""
+                SELECT id, username, pin_hash, tmdb_key, gemini_key, failed_attempts, locked_until 
+                FROM users 
+                WHERE username = %s
+            """, (clean_user,))
             user = cur.fetchone()
             if not user:
-                return False, "User not found", None
-            if not user.get('pin_hash'):
-                # User has no PIN set yet
-                d = dict(user)
-                d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
-                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
-                return True, "No PIN set", d
+                return False, "Invalid credentials", None
+            
+            # Check lockout
+            locked_until = user.get('locked_until')
+            if locked_until:
+                cur.execute("SELECT NOW() < %s AS is_locked, EXTRACT(EPOCH FROM (%s - NOW()))::INT AS wait_sec", (locked_until, locked_until))
+                lock_res = cur.fetchone()
+                if lock_res and lock_res.get('is_locked'):
+                    wait_sec = max(1, lock_res.get('wait_sec', 900))
+                    return False, f"Account temporarily locked. Try again in {wait_sec}s.", None
             
             stored_hash = user.get('pin_hash')
-            if verify_pin(pin, stored_hash):
-                # If it's a legacy hash, transparently migrate to PBKDF2
-                if not stored_hash.startswith("pbkdf2_sha256$"):
-                    new_hash = hash_pin(pin)
-                    cur.execute("UPDATE users SET pin_hash = %s, updated_at = NOW() WHERE id = %s", (new_hash, user['id']))
-                    conn.commit()
-                    user['pin_hash'] = new_hash
-                d = dict(user)
-                d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
-                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
-                return True, "Authenticated", d
-            return False, "Invalid PIN", None
+            # Strict: reject empty pin_hash or incorrect PIN
+            if not stored_hash or not pin or not verify_pin(pin, stored_hash):
+                # Increment failed attempts
+                cur.execute("""
+                    UPDATE users 
+                    SET failed_attempts = COALESCE(failed_attempts, 0) + 1,
+                        locked_until = CASE 
+                            WHEN COALESCE(failed_attempts, 0) + 1 >= 5 THEN NOW() + INTERVAL '15 minutes'
+                            ELSE locked_until 
+                        END,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING failed_attempts, locked_until
+                """, (user['id'],))
+                updated_lock = cur.fetchone()
+                conn.commit()
+                if updated_lock and updated_lock.get('failed_attempts', 0) >= 5:
+                    return False, "Account locked for 15 minutes due to too many failed attempts.", None
+                return False, "Invalid credentials", None
+            
+            # PIN is valid -> Reset failed attempts and lockout
+            if not stored_hash.startswith("pbkdf2_sha256$"):
+                new_hash = hash_pin(pin)
+                cur.execute("""
+                    UPDATE users 
+                    SET pin_hash = %s, failed_attempts = 0, locked_until = NULL, updated_at = NOW() 
+                    WHERE id = %s
+                """, (new_hash, user['id']))
+            else:
+                cur.execute("""
+                    UPDATE users 
+                    SET failed_attempts = 0, locked_until = NULL, updated_at = NOW() 
+                    WHERE id = %s
+                """, (user['id'],))
+            conn.commit()
+
+            d = dict(user)
+            d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
+            d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
+            return True, "Login successful", d
     finally:
         release_connection(conn)
 

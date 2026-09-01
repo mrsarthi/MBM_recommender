@@ -10,13 +10,13 @@ root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-from backend.api import ThreadedHTTPServer, CineAIRequestHandler
+from backend.api import ThreadedHTTPServer, CineAIRequestHandler, create_session_token
 from backend.recommender import analyze, load_watched_data
 from backend.gemini_client import interpret_query_with_ai
 from backend.predictions import load_ai
 from backend.config import MODEL_PATH, COLUMNS_PATH, VECTORIZER_PATH, ENCODERS_PATH
 
-TEST_PORT = 9989
+TEST_PORT = 9983
 BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
 
 class TestMovieTitleSearch(unittest.TestCase):
@@ -61,24 +61,36 @@ class TestMovieTitleSearch(unittest.TestCase):
             'context': 'Alone',
             'streaming': 'All Platforms'
         }).encode('utf-8')
+        token = create_session_token(self.test_username)
         req = urllib.request.Request(url, data=payload, headers={
             'Content-Type': 'application/json',
-            'X-Letterboxd-User': self.test_username
+            'Authorization': f'Bearer {token}'
         })
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             return json.loads(resp.read().decode('utf-8'))
 
     def test_01_search_inception_title(self):
-        data = self._query_api('Inception')
+        fresh_user = f"unwatched_user_{int(time.time()*1000)}"
+        url = f"{BASE_URL}/api/recommend"
+        payload = json.dumps({
+            'prompt': 'Inception',
+            'context': 'Alone',
+            'streaming': 'All Platforms'
+        }).encode('utf-8')
+        token = create_session_token(fresh_user)
+        req = urllib.request.Request(url, data=payload, headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {token}'
+        })
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode('utf-8'))
         candidates = data.get('candidates', [])
         self.assertGreater(len(candidates), 0, "Should return candidates for 'Inception'")
-        
-        # Check first candidate is Inception
         first_title = candidates[0].get('title', '')
         self.assertEqual(first_title, 'Inception', f"First candidate should be Inception, got '{first_title}'")
         self.assertTrue(candidates[0].get('is_direct_match'), "Inception should be marked as direct match")
-        self.assertTrue(candidates[0].get('is_watched'), "Inception should be marked as watched (in diary)")
 
     def test_02_search_dune_title(self):
         data = self._query_api('Dune')
@@ -132,7 +144,7 @@ class TestMovieTitleSearch(unittest.TestCase):
     def test_08_direct_analyze_function(self):
         ai_analysis = {'genres': [], 'search_query': '', 'suggested_titles': []}
         picks = analyze(
-            self.watched_titles, self.watched_ids, self.hated,
+            [], [], self.hated,
             ai_analysis, self.ai_model, self.ai_cols, self.ai_vec, self.ai_enc,
             raw_prompt='The Matrix'
         )

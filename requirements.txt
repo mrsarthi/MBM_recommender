@@ -4,11 +4,8 @@ joblib
 scikit-learn
 requests>=2.31.0
 python-dotenv>=1.0.0
-tqdm
-customtkinter
-Pillow
 requests-cache
-matplotlib
 google-generativeai
 psycopg2-binary
 curl-cffi>=0.7.0
+cryptography>=41.0.0

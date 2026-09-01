@@ -17,10 +17,12 @@ from backend.recommender import analyze
 from backend.watchlist import pick_movie_for_tonight
 from backend.in_memory_model import train_user_model_in_memory
 
+import time
+
 class TestGeminiTastePipeline(unittest.TestCase):
 
     def setUp(self):
-        self.username = "test_taste_cinephile"
+        self.username = f"test_taste_cinephile_{int(time.time() * 1000)}"
         self.user = get_or_create_user(self.username)
         
         # Insert sample movies with directors, genres, and years

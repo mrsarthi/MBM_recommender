@@ -19,6 +19,18 @@ TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
 LETTERBOXD_USERNAME = os.getenv('LETTERBOXD_USERNAME', '')
 DATABASE_URL = os.getenv('DATABASE_URL', '')
 
+import hashlib
+import base64
+
+ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
+if not ENCRYPTION_KEY:
+    derived = hashlib.pbkdf2_hmac('sha256', (DATABASE_URL or 'mbmr_secure_instance').encode('utf-8'), b'mbmr_fixed_salt_2026_prod', 100000)
+    ENCRYPTION_KEY = base64.urlsafe_b64encode(derived).decode('utf-8')
+
+SESSION_SECRET = os.getenv('SESSION_SECRET')
+if not SESSION_SECRET:
+    SESSION_SECRET = hashlib.sha256((ENCRYPTION_KEY + "_session_salt").encode('utf-8')).hexdigest()
+
 if not TMDB_KEY or TMDB_KEY == 'YOUR_TMDB_API_KEY_HERE':
     print("[WARN] TMDB_key not set in .env. Search, posters, and ripple recommendations require a valid TMDB key.")
     print("       Get a free TMDB API key at: https://www.themoviedb.org/settings/api")

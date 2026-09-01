@@ -12,7 +12,7 @@ root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-from backend.api import ThreadedHTTPServer, CineAIRequestHandler
+from backend.api import ThreadedHTTPServer, CineAIRequestHandler, create_session_token
 from backend.config import get_user_profile_path, get_user_watchlist_path
 from backend.watchlist import add_to_watchlist, remove_from_watchlist, load_watchlist
 
@@ -26,6 +26,8 @@ class TestOnboardingAndWatchlistIsolation(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.server.serve_forever)
         cls.thread.daemon = True
         cls.thread.start()
+        cls.token_alpha = create_session_token('test_user_alpha')
+        cls.token_beta = create_session_token('test_user_beta')
         time.sleep(0.5)
 
     @classmethod
@@ -49,7 +51,7 @@ class TestOnboardingAndWatchlistIsolation(unittest.TestCase):
     def test_01_new_user_starts_with_zero_watchlist(self):
         """New visitor/user should have 0 watchlist count and 0 films."""
         url = f"{BASE_URL}/api/status"
-        req = urllib.request.Request(url, headers={'X-Letterboxd-User': 'test_user_alpha'})
+        req = urllib.request.Request(url, headers={'Authorization': f'Bearer {self.token_alpha}'})
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
@@ -60,7 +62,7 @@ class TestOnboardingAndWatchlistIsolation(unittest.TestCase):
     def test_02_new_user_empty_watchlist_endpoint(self):
         """GET /api/watchlist for an unsynced user returns an empty list, not default 69 items."""
         url = f"{BASE_URL}/api/watchlist"
-        req = urllib.request.Request(url, headers={'X-Letterboxd-User': 'test_user_alpha'})
+        req = urllib.request.Request(url, headers={'Authorization': f'Bearer {self.token_alpha}'})
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode('utf-8'))
@@ -84,7 +86,7 @@ class TestOnboardingAndWatchlistIsolation(unittest.TestCase):
         payload = json.dumps(movie).encode('utf-8')
         req = urllib.request.Request(url, data=payload, headers={
             'Content-Type': 'application/json',
-            'X-Letterboxd-User': 'test_user_alpha'
+            'Authorization': f'Bearer {self.token_alpha}'
         })
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
@@ -92,13 +94,13 @@ class TestOnboardingAndWatchlistIsolation(unittest.TestCase):
             self.assertTrue(d.get('success'))
 
         # Check Alpha's status
-        req_alpha = urllib.request.Request(f"{BASE_URL}/api/status", headers={'X-Letterboxd-User': 'test_user_alpha'})
+        req_alpha = urllib.request.Request(f"{BASE_URL}/api/status", headers={'Authorization': f'Bearer {self.token_alpha}'})
         with urllib.request.urlopen(req_alpha) as resp:
             d = json.loads(resp.read().decode('utf-8'))
             self.assertEqual(d.get('watchlist_count'), 1)
 
         # Check Beta's status (should remain 0)
-        req_beta = urllib.request.Request(f"{BASE_URL}/api/status", headers={'X-Letterboxd-User': 'test_user_beta'})
+        req_beta = urllib.request.Request(f"{BASE_URL}/api/status", headers={'Authorization': f'Bearer {self.token_beta}'})
         with urllib.request.urlopen(req_beta) as resp:
             d = json.loads(resp.read().decode('utf-8'))
             self.assertEqual(d.get('watchlist_count'), 0)
@@ -107,7 +109,7 @@ class TestOnboardingAndWatchlistIsolation(unittest.TestCase):
         rem_payload = json.dumps({'movie_id': 999999}).encode('utf-8')
         req_rem = urllib.request.Request(f"{BASE_URL}/api/watchlist/remove", data=rem_payload, headers={
             'Content-Type': 'application/json',
-            'X-Letterboxd-User': 'test_user_alpha'
+            'Authorization': f'Bearer {self.token_alpha}'
         })
         with urllib.request.urlopen(req_rem) as resp:
             self.assertEqual(resp.status, 200)
@@ -122,10 +124,12 @@ class TestOnboardingAndWatchlistIsolation(unittest.TestCase):
         url = f"{BASE_URL}/api/watchlist/sync"
         payload = json.dumps({'username': ''}).encode('utf-8')
         req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req) as resp:
-            self.assertEqual(resp.status, 200)
-            d = json.loads(resp.read().decode('utf-8'))
-            self.assertFalse(d.get('success'))
+        try:
+            with urllib.request.urlopen(req) as resp:
+                d = json.loads(resp.read().decode('utf-8'))
+                self.assertFalse(d.get('success'))
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 401)
 
 if __name__ == '__main__':
     unittest.main()
