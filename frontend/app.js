@@ -652,7 +652,12 @@ function renderWatchlistSkeleton(count = 6) {
     }
 }
 
-async function fetchWatchlist() {
+const WATCHLIST_PAGE_SIZE = 48;
+let watchlistCurrentPage = 1;
+let currentWatchlistItems = [];
+
+async function fetchWatchlist(resetPage = true) {
+    if (resetPage) watchlistCurrentPage = 1;
     const stream = document.getElementById('wl-stream-select')?.value || 'All Platforms';
     const sort = document.getElementById('wl-sort-select')?.value || 'Highest Predicted ★';
     const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
@@ -665,6 +670,7 @@ async function fetchWatchlist() {
     if (watchlistCache.has(cacheKey)) {
         const cachedData = watchlistCache.get(cacheKey);
         const cachedItems = cachedData.watchlist || [];
+        currentWatchlistItems = cachedItems;
         renderWatchlistGrid(cachedItems);
         updateWatchlistBadge(cachedData.total !== undefined ? cachedData.total : cachedItems.length);
         if (cachedItems.length > 0) {
@@ -693,6 +699,7 @@ async function fetchWatchlist() {
                     </div>
                 `;
             }
+            renderWatchlistPagination(0);
             return;
         }
         const data = await res.json();
@@ -701,6 +708,7 @@ async function fetchWatchlist() {
             return;
         }
         const items = data.watchlist || [];
+        currentWatchlistItems = items;
         watchlistCache.set(cacheKey, data);
         if (currentWatchlistCluster === 'All' && sort === 'Highest Predicted ★' && stream === 'All Platforms') {
             try { localStorage.setItem('mbmr_cached_watchlist', JSON.stringify(data)); } catch(e) {}
@@ -731,7 +739,7 @@ function setWatchlistCluster(el, cluster) {
     document.querySelectorAll('.wl-chip').forEach(c => c.classList.remove('active'));
     el.classList.add('active');
     currentWatchlistCluster = cluster;
-    fetchWatchlist();
+    fetchWatchlist(true);
 }
 
 function renderWatchlistGrid(items) {
@@ -745,10 +753,14 @@ function renderWatchlistGrid(items) {
                 <p style="font-size:12px;margin-top:6px;">Add movies from Search or click "Sync Letterboxd Watchlist".</p>
             </div>
         `;
+        renderWatchlistPagination(0);
         return;
     }
 
-    items.forEach(m => {
+    const start = (watchlistCurrentPage - 1) * WATCHLIST_PAGE_SIZE;
+    const pageItems = items.slice(start, start + WATCHLIST_PAGE_SIZE);
+
+    pageItems.forEach(m => {
         const card = document.createElement('div');
         card.className = 'poster-card';
         card.onclick = () => openSpotlight(m);
@@ -772,6 +784,59 @@ function renderWatchlistGrid(items) {
         `;
         grid.appendChild(card);
     });
+
+    renderWatchlistPagination(items.length);
+}
+
+function renderWatchlistPagination(totalItems) {
+    const pagEl = document.getElementById('watchlist-pagination');
+    if (!pagEl) return;
+    const totalPages = Math.ceil(totalItems / WATCHLIST_PAGE_SIZE);
+    if (totalPages <= 1) {
+        pagEl.innerHTML = '';
+        return;
+    }
+
+    let html = `
+        <button class="j-page-btn" onclick="changeWatchlistPage(${watchlistCurrentPage - 1})" ${watchlistCurrentPage <= 1 ? 'disabled' : ''}>
+            ‹ Prev
+        </button>
+    `;
+
+    let startPage = Math.max(1, watchlistCurrentPage - 2);
+    let endPage = Math.min(totalPages, watchlistCurrentPage + 2);
+    if (watchlistCurrentPage <= 3) endPage = Math.min(5, totalPages);
+    if (watchlistCurrentPage > totalPages - 3) startPage = Math.max(1, totalPages - 4);
+
+    if (startPage > 1) {
+        html += `<button class="j-page-btn" onclick="changeWatchlistPage(1)">1</button>`;
+        if (startPage > 2) html += `<span class="j-page-info">...</span>`;
+    }
+
+    for (let p = startPage; p <= endPage; p++) {
+        html += `<button class="j-page-btn ${p === watchlistCurrentPage ? 'active' : ''}" onclick="changeWatchlistPage(${p})">${p}</button>`;
+    }
+
+    if (endPage < totalPages) {
+        if (endPage < totalPages - 1) html += `<span class="j-page-info">...</span>`;
+        html += `<button class="j-page-btn" onclick="changeWatchlistPage(${totalPages})">${totalPages}</button>`;
+    }
+
+    html += `
+        <button class="j-page-btn" onclick="changeWatchlistPage(${watchlistCurrentPage + 1})" ${watchlistCurrentPage >= totalPages ? 'disabled' : ''}>
+            Next ›
+        </button>
+        <span class="j-page-info">Page ${watchlistCurrentPage} of ${totalPages} (${totalItems} films)</span>
+    `;
+
+    pagEl.innerHTML = html;
+}
+
+function changeWatchlistPage(page) {
+    watchlistCurrentPage = page;
+    renderWatchlistGrid(currentWatchlistItems);
+    const viewWl = document.getElementById('view-watchlist');
+    if (viewWl) viewWl.scrollIntoView({ behavior: 'smooth' });
 }
 
 async function removeFromWatchlistDirect(movieId) {
@@ -782,7 +847,7 @@ async function removeFromWatchlistDirect(movieId) {
         });
         watchlistIds.delete(movieId);
         watchlistCache.clear();
-        fetchWatchlist();
+        fetchWatchlist(false);
         updateWatchlistBadge(watchlistIds.size);
     } catch(e) {}
 }
