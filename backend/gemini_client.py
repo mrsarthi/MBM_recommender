@@ -70,15 +70,31 @@ def _extract_year_constraints(user_input):
 
     return year_min, year_max
 
+def _extract_reference_entity(user_input):
+    """Deterministic extraction of reference movie titles from comparison queries."""
+    text = (user_input or '').strip()
+    pattern = r'^(?:(?:can you\s+)?(?:recommend|find|suggest|give me)?\s*(?:something|anything|movies?|films?)?\s*(?:like|similar to|in the vein of)\s+)(.+)$'
+    m = re.search(pattern, text, re.IGNORECASE)
+    candidate = m.group(1).strip() if m else text
+    
+    # Strip trailing temporal clauses
+    candidate = re.sub(r'\s*(?:from\s+)?(?:before|prior to|older than|after|post|in|during)?\s*(?:the\s*)?\b(?:\d{4}s?|\d{2}s)\b.*$', '', candidate, flags=re.IGNORECASE).strip()
+    candidate = re.sub(r'\s*(?:from\s+before\s+.*|from\s+after\s+.*)$', '', candidate, flags=re.IGNORECASE).strip()
+    
+    if candidate and candidate.lower() != text.lower() and len(candidate.split()) <= 6:
+        return candidate.strip(' "\'')
+    return None
+
 def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None):
     """
     Parses natural language mood/vibe prompts into TMDB genres, search query, year constraints,
-    thematic keywords, and suggested titles with vibe pitches.
+    thematic keywords, reference entity, and suggested titles with vibe pitches.
     Grounded with the user's Letterboxd taste anchors (top directors, 5★ favorites, high affinity genres).
     Cascades across active Gemini models if quota is exhausted on any single model.
     """
     active_key = custom_api_key or GEMINI_API_KEY
     det_ymin, det_ymax = _extract_year_constraints(user_input)
+    det_ref_entity = _extract_reference_entity(user_input)
 
     if not active_key or active_key == 'YOUR_GEMINI_API_KEY_HERE':
         return {
@@ -87,6 +103,7 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
             'suggested_titles': [],
             'year_min': det_ymin,
             'year_max': det_ymax,
+            'reference_entity': det_ref_entity,
             'thematic_keywords': []
         }
 
@@ -98,6 +115,7 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
             'suggested_titles': [],
             'year_min': det_ymin,
             'year_max': det_ymax,
+            'reference_entity': det_ref_entity,
             'thematic_keywords': []
         }
 
@@ -187,6 +205,8 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
                     })
             data['suggested_titles'] = normalized_titles
 
+            data['reference_entity'] = det_ref_entity
+
             if not data['genres'] and not data.get('search_query') and not data.get('suggested_titles'):
                 data['genres'] = _fallback_mood_match(user_input)
             if not data.get('search_query'):
@@ -202,6 +222,7 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
         'suggested_titles': [],
         'year_min': det_ymin,
         'year_max': det_ymax,
+        'reference_entity': det_ref_entity,
         'thematic_keywords': []
     }
 
@@ -477,6 +498,11 @@ def _fallback_mood_match(user_input):
         'sad': ['Drama', 'Romance'],
         'tense': ['Horror', 'Thriller', 'Mystery', 'Crime'],
         'adventurous': ['Adventure', 'Science Fiction', 'Fantasy', 'Action'],
+        'odyssey': ['Adventure', 'Fantasy', 'Action'],
+        'myth': ['Fantasy', 'Adventure', 'Action'],
+        'mythology': ['Fantasy', 'Adventure', 'Action'],
+        'quest': ['Adventure', 'Fantasy', 'Action'],
+        'voyage': ['Adventure', 'Drama', 'Fantasy'],
         'calm': ['Documentary', 'Drama', 'History'],
         'nostalgic': ['Drama', 'Romance', 'Fantasy'],
         'excited': ['Action', 'Adventure', 'Comedy'],
@@ -486,6 +512,8 @@ def _fallback_mood_match(user_input):
         'mysterious': ['Mystery', 'Thriller', 'Crime'],
         'romantic': ['Romance', 'Drama', 'Comedy'],
         'mind-bending': ['Science Fiction', 'Mystery', 'Thriller'],
+        'psychological': ['Thriller', 'Mystery', 'Drama'],
+        'cyberpunk': ['Science Fiction', 'Action', 'Thriller'],
         'sci-fi': ['Science Fiction', 'Mystery', 'Thriller'],
         'noir': ['Crime', 'Mystery', 'Thriller'],
         'indie': ['Drama', 'Romance']

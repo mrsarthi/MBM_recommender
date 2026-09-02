@@ -23,6 +23,23 @@ def train_user_model_in_memory(username: str):
         return None, [], None, {}
 
     df = df.copy()
+    col_map = {'Name': 'title', 'Title': 'title', 'Year': 'release_year', 'Directors': 'director', 'Director': 'director', 'Cast': 'cast', 'Genres': 'genres', 'Overview': 'overview', 'rating': 'Rating'}
+    for old_c, new_c in col_map.items():
+        if old_c in df.columns and new_c not in df.columns:
+            df[new_c] = df[old_c]
+    if 'genres' not in df.columns:
+        df['genres'] = ''
+    if 'overview' not in df.columns:
+        df['overview'] = ''
+    if 'director' not in df.columns:
+        df['director'] = ''
+    if 'cast' not in df.columns:
+        df['cast'] = ''
+    if 'release_year' not in df.columns:
+        df['release_year'] = 2000
+    if 'runtime' not in df.columns:
+        df['runtime'] = 105.0
+
     df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce').astype(float)
     df = df.dropna(subset=['Rating'])
     if len(df) < 5:
