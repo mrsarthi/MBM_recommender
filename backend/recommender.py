@@ -483,6 +483,9 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                     seen_ids.add(res.get('id'))
                     results.append(res)
 
+    year_min = ai_analysis.get('year_min') if isinstance(ai_analysis, dict) else None
+    year_max = ai_analysis.get('year_max') if isinstance(ai_analysis, dict) else None
+
     # 3. TMDB Keyword-Constrained Thematic Discovery
     search_query = (ai_analysis.get('search_query') or clean_raw or '').strip()
     kw_ids = []
@@ -491,18 +494,30 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
         if not kw_ids and clean_raw and clean_raw != search_query:
             kw_ids = _get_tmdb_keywords(clean_raw, active_tmdb)
 
+    # Check thematic_keywords if available
+    thematic_kws = ai_analysis.get('thematic_keywords', []) if isinstance(ai_analysis, dict) else []
+    for t_kw in thematic_kws[:3]:
+        extra_ids = _get_tmdb_keywords(t_kw, active_tmdb)
+        for eid in extra_ids:
+            if eid not in kw_ids:
+                kw_ids.append(eid)
+
     if kw_ids and active_tmdb:
         def fetch_kw_discover_page(page):
             try:
                 params = {
                     'api_key': active_tmdb,
-                    'with_keywords': "|".join(kw_ids),
+                    'with_keywords': "|".join(kw_ids[:8]),
                     'vote_count.gte': 40,
                     'vote_average.gte': 5.8,
                     'sort_by': 'popularity.desc',
                     'language': 'en-US',
                     'page': page
                 }
+                if year_min:
+                    params['primary_release_date.gte'] = f"{year_min}-01-01"
+                if year_max:
+                    params['primary_release_date.lte'] = f"{year_max}-12-31"
                 resp = http_session.get(f"{TMDB_BASE_URL}/discover/movie", params=params, timeout=6)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -523,7 +538,12 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     # 4. Search Query / Theme Fallback
     if search_query and search_query != clean_raw and active_tmdb and len(results) < 20:
         try:
-            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': search_query}, timeout=6).json()
+            params = {'api_key': active_tmdb, 'query': search_query}
+            if year_min and not year_max:
+                params['primary_release_year'] = year_min
+            elif year_max and not year_min:
+                params['primary_release_year'] = year_max
+            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=6).json()
             matches = resp.get('results', []) if isinstance(resp, dict) else []
             for m in matches[:10]:
                 if m.get('id') and m.get('id') not in seen_ids:
@@ -540,9 +560,14 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             discoverUrl = f"{TMDB_BASE_URL}/discover/movie"
             discoverParams = {
                 'api_key': active_tmdb, 'with_genres': genreIdString,
-                'vote_average.gte': 6.2, 'vote_count.gte': 300, 
+                'vote_average.gte': 6.2, 'vote_count.gte': 150, 
                 'sort_by': 'popularity.desc', 'language': 'en-US', 'page': 1
             }
+            if year_min:
+                discoverParams['primary_release_date.gte'] = f"{year_min}-01-01"
+            if year_max:
+                discoverParams['primary_release_date.lte'] = f"{year_max}-12-31"
+
             def fetch_discover_page(page):
                 try:
                     params = dict(discoverParams, page=page)
@@ -561,19 +586,29 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                             seen_ids.add(m.get('id'))
                             results.append(m)
 
-    # Filter recommendations: never recommend films the user has already watched / logged
+    # Filter recommendations: enforce unwatched and year bounds
+    def _passes_year_bounds(m):
+        rel_date = str(m.get('release_date') or m.get('year') or '')
+        if rel_date and len(rel_date) >= 4 and rel_date[:4].isdigit():
+            myear = int(rel_date[:4])
+            if year_max and myear > year_max:
+                return False
+            if year_min and myear < year_min:
+                return False
+        return True
+
     unwatched_directs = []
     for movie in direct_matches:
         m_id = movie.get('id')
         title_norm = titleNormalize(movie.get('title', ''))
-        if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids):
+        if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids) and _passes_year_bounds(movie):
             unwatched_directs.append(movie)
 
     unwatched_results = []
     for movie in results:
         m_id = movie.get('id')
         title_norm = titleNormalize(movie.get('title', ''))
-        if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids):
+        if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids) and _passes_year_bounds(movie):
             unwatched_results.append(movie)
 
     all_candidates = unwatched_directs + unwatched_results

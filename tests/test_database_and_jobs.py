@@ -435,16 +435,15 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
             {'slug': 'barbie-2023', 'title': 'Barbie', 'year_hint': '2023'}
         ]
 
+        resolved_movies = [
+            {'movie_id': 872585, 'title': 'Oppenheimer', 'letterboxd_slug': 'oppenheimer-2023', 'poster_path': '/opp.jpg'},
+            {'movie_id': 346698, 'title': 'Barbie', 'letterboxd_slug': 'barbie-2023', 'poster_path': '/barb.jpg'}
+        ]
+
         with patch('backend.jobs.scrape_letterboxd_watchlist', return_value=mock_entries):
-            with patch('backend.jobs.resolve_entries') as mock_resolve:
-                mock_resolve.return_value = (
-                    [
-                        {'movie_id': 872585, 'title': 'Oppenheimer', 'letterboxd_slug': 'oppenheimer-2023', 'poster_path': '/opp.jpg'},
-                        {'movie_id': 346698, 'title': 'Barbie', 'letterboxd_slug': 'barbie-2023', 'poster_path': '/barb.jpg'}
-                    ],
-                    {'oppenheimer-2023': 872585, 'barbie-2023': 346698}
-                )
+            with patch('backend.jobs.resolve_entries', return_value=(resolved_movies, {'oppenheimer-2023': 872585, 'barbie-2023': 346698})):
                 with patch('backend.jobs.train_user_model_in_memory') as mock_train:
+                    upsert_movies_batch(resolved_movies)
                     job_id = start_watchlist_sync_job(test_user)
                     
                     for _ in range(60):
