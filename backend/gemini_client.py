@@ -197,6 +197,19 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
             'thematic_keywords': det_kws
         }
 
+    client = _get_genai_client(active_key)
+    if not client:
+        return {
+            'genres': det_genres,
+            'search_query': user_input.strip(),
+            'suggested_titles': [],
+            'year_min': det_ymin,
+            'year_max': det_ymax,
+            'languages': det_langs,
+            'reference_entity': det_ref_entity,
+            'thematic_keywords': det_kws
+        }
+
     # Format user taste context if available
     taste_prompt_block = ""
     if taste_context and isinstance(taste_context, dict):
