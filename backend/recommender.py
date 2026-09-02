@@ -437,11 +437,14 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                 for rm in r_resp.get('results', [])[:10]:
                     if rm.get('id') and rm.get('id') not in seen_ids:
                         seen_ids.add(rm.get('id'))
+                        rm['thematic_match'] = True
+                        rm['thematic_weight'] = 1.08
                         results.append(rm)
             except Exception: pass
 
-    # 2. Suggested Titles from Gemini (concurrent lookup with high thematic priority)
-    suggested_titles = ai_analysis.get('suggested_titles', [])
+    # 2. Suggested Titles from Gemini (concurrent lookup with high thematic priority & ripple expansion)
+    suggested_titles = ai_analysis.get('suggested_titles', []) if isinstance(ai_analysis, dict) else []
+    seed_movie_ids = []
     if suggested_titles and active_tmdb:
         def fetch_title(item):
             if isinstance(item, dict):
@@ -481,12 +484,56 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             for res in executor.map(fetch_title, suggested_titles):
                 if res and res.get('id') and res.get('id') not in seen_ids:
                     seen_ids.add(res.get('id'))
+                    seed_movie_ids.append(res.get('id'))
                     results.append(res)
+
+        # Ripple Expansion on Top Seeds (Expands curated pool with lookalike cinephile gems)
+        if seed_movie_ids:
+            def fetch_ripple(seed_id):
+                try:
+                    r_resp = http_session.get(f"{TMDB_BASE_URL}/movie/{seed_id}/recommendations", params={'api_key': active_tmdb}, timeout=5).json()
+                    return r_resp.get('results', [])[:6] if isinstance(r_resp, dict) else []
+                except Exception:
+                    return []
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                for ripple_list in executor.map(fetch_ripple, seed_movie_ids[:4]):
+                    for rm in ripple_list:
+                        if rm.get('id') and rm.get('id') not in seen_ids:
+                            seen_ids.add(rm.get('id'))
+                            rm['thematic_match'] = True
+                            rm['thematic_weight'] = 1.06
+                            results.append(rm)
+
+    # 3. Deterministic Reference Entity Lookup & Ripple (Zero-AI Fallback & Expansion)
+    ref_entity = ai_analysis.get('reference_entity') if isinstance(ai_analysis, dict) else None
+    if ref_entity and active_tmdb and len(results) < 30:
+        try:
+            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': ref_entity}, timeout=5).json()
+            ref_matches = resp.get('results', []) if isinstance(resp, dict) else []
+            if ref_matches:
+                top_ref = ref_matches[0]
+                top_ref_id = top_ref.get('id')
+                if top_ref_id and top_ref_id not in seen_ids:
+                    seen_ids.add(top_ref_id)
+                    top_ref['thematic_match'] = True
+                    top_ref['thematic_weight'] = 1.12
+                    results.append(top_ref)
+
+                # Pull TMDB recommendations for reference film
+                r_resp = http_session.get(f"{TMDB_BASE_URL}/movie/{top_ref_id}/recommendations", params={'api_key': active_tmdb}, timeout=5).json()
+                for rm in r_resp.get('results', [])[:12]:
+                    if rm.get('id') and rm.get('id') not in seen_ids:
+                        seen_ids.add(rm.get('id'))
+                        rm['thematic_match'] = True
+                        rm['thematic_weight'] = 1.08
+                        results.append(rm)
+        except Exception: pass
 
     year_min = ai_analysis.get('year_min') if isinstance(ai_analysis, dict) else None
     year_max = ai_analysis.get('year_max') if isinstance(ai_analysis, dict) else None
 
-    # 3. TMDB Keyword-Constrained Thematic Discovery
+    # 4. TMDB Keyword-Constrained Thematic Discovery
     search_query = (ai_analysis.get('search_query') or clean_raw or '').strip()
     kw_ids = []
     if search_query and active_tmdb:
@@ -502,14 +549,14 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             if eid not in kw_ids:
                 kw_ids.append(eid)
 
-    if kw_ids and active_tmdb:
+    if kw_ids and active_tmdb and len(results) < 35:
         def fetch_kw_discover_page(page):
             try:
                 params = {
                     'api_key': active_tmdb,
                     'with_keywords': "|".join(kw_ids[:8]),
                     'vote_count.gte': 40,
-                    'vote_average.gte': 5.8,
+                    'vote_average.gte': 6.0,
                     'sort_by': 'popularity.desc',
                     'language': 'en-US',
                     'page': page
@@ -527,15 +574,15 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                 return []
 
         with ThreadPoolExecutor(max_workers=3) as executor:
-            for page_results in executor.map(fetch_kw_discover_page, (1, 2, 3)):
+            for page_results in executor.map(fetch_kw_discover_page, (1, 2)):
                 for m in page_results:
                     if m.get('id') and m.get('id') not in seen_ids:
                         seen_ids.add(m.get('id'))
                         m['thematic_match'] = True
-                        m['thematic_weight'] = 1.10
+                        m['thematic_weight'] = 1.08
                         results.append(m)
 
-    # 4. Search Query / Theme Fallback
+    # 5. Search Query / Theme Fallback
     if search_query and search_query != clean_raw and active_tmdb and len(results) < 20:
         try:
             params = {'api_key': active_tmdb, 'query': search_query}
@@ -551,7 +598,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                     results.append(m)
         except Exception: pass
 
-    # 5. Discover by Genres (Fallback when thematic keyword pool is small)
+    # 6. Discover by Genres (Fallback when thematic pool is still small, strictly quality-filtered)
     desiredGenres = ai_analysis.get('genres', [])
     if desiredGenres and active_tmdb and len(results) < 25:
         targetGenreIds = [str(genreDict[name]) for name in desiredGenres if name in genreDict]
@@ -560,7 +607,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             discoverUrl = f"{TMDB_BASE_URL}/discover/movie"
             discoverParams = {
                 'api_key': active_tmdb, 'with_genres': genreIdString,
-                'vote_average.gte': 6.2, 'vote_count.gte': 150, 
+                'vote_average.gte': 6.4, 'vote_count.gte': 100, 
                 'sort_by': 'popularity.desc', 'language': 'en-US', 'page': 1
             }
             if year_min:
@@ -579,7 +626,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                 except Exception:
                     return []
 
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            with ThreadPoolExecutor(max_workers=2) as executor:
                 for page_results in executor.map(fetch_discover_page, (1, 2)):
                     for m in page_results:
                         if m.get('id') and m.get('id') not in seen_ids:
