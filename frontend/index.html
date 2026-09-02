@@ -13,7 +13,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=5.9">
+    <link rel="stylesheet" href="styles.css?v=6.0">
 </head>
 <body>
 
@@ -472,14 +472,6 @@
                             <input id="onboard-tmdb" type="password" class="onboard-input" placeholder="Enter your personal TMDB API Key">
                         </div>
 
-                        <div class="onboard-field" style="margin-bottom:12px;">
-                            <div class="onboard-label-row">
-                                <label style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px;display:block;">Google Gemini Key <span style="color:var(--text3); font-weight:500;">(Optional)</span></label>
-                                <a href="https://aistudio.google.com/" target="_blank" class="onboard-link" style="font-size:10px;color:var(--accent);">Get Free Key ↗</a>
-                            </div>
-                            <input id="onboard-gemini" type="password" class="onboard-input" placeholder="Enter Gemini Key (or leave blank)" oninput="updateGeminiNotice()">
-                        </div>
-
                         <div class="onboard-fallback-link" style="text-align:center;margin-bottom:14px;margin-top:8px;">
                             <a href="#" style="font-size:11px;color:var(--accent);text-decoration:none;font-weight:600;" onclick="toggleLetterboxdFallback(event)">I don't have a Letterboxd account</a>
                         </div>
@@ -537,12 +529,6 @@
                         </div>
                     </div>
 
-                    <!-- Gemini Status Callout -->
-                    <div id="gemini-status-callout" style="margin-top:14px; padding:10px 12px; border-radius:8px; font-size:11px; line-height:1.45; background:rgba(234, 179, 8, 0.08); border:1px solid rgba(234, 179, 8, 0.25); color:#facc15;">
-                        <strong style="display:block; margin-bottom:4px; color:#fef08a;">ℹ️ No Gemini Key? No problem!</strong>
-                        <span>Your taste profile & star ratings will work 100% using our built-in offline model.</span>
-                    </div>
-
                     <div style="display:flex;gap:10px;margin-top:16px;">
                         <button class="sp-btn secondary" onclick="nextOnboardStep(1)">← Back</button>
                         <button class="sp-btn primary" style="flex:1;" onclick="completeOnboarding()">Launch MBMR ✦</button>
@@ -566,6 +552,6 @@
 
 </div>
 
-<script src="app.js?v=5.9"></script>
+<script src="app.js?v=6.0"></script>
 </body>
 </html>

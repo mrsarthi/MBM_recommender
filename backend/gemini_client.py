@@ -31,6 +31,85 @@ def _get_genai_client(active_key=None):
     except Exception:
         return None
 
+LANGUAGE_MAP = {
+    'japanese': ['ja'],
+    'japan': ['ja'],
+    'anime': ['ja'],
+    'chinese': ['zh', 'cn'],
+    'china': ['zh', 'cn'],
+    'hong kong': ['zh', 'cn'],
+    'taiwanese': ['zh', 'cn'],
+    'wuxia': ['zh', 'cn'],
+    'korean': ['ko'],
+    'korea': ['ko'],
+    'k-drama': ['ko'],
+    'french': ['fr'],
+    'france': ['fr'],
+    'italian': ['it'],
+    'italy': ['it'],
+    'giallo': ['it'],
+    'spanish': ['es'],
+    'spain': ['es'],
+    'mexican': ['es'],
+    'mexico': ['es'],
+    'german': ['de'],
+    'germany': ['de'],
+    'hindi': ['hi'],
+    'indian': ['hi'],
+    'bollywood': ['hi'],
+    'nordic': ['sv', 'da', 'no'],
+    'swedish': ['sv'],
+    'danish': ['da'],
+    'norwegian': ['no'],
+    'russian': ['ru'],
+    'soviet': ['ru']
+}
+
+THEMATIC_KEYWORD_MAP = {
+    'samurai': ['samurai', 'sword fight', 'chanbara', 'ronin'],
+    'ninja': ['ninja', 'shinobi', 'assassin', 'martial arts'],
+    'wuxia': ['wuxia', 'martial arts', 'swordplay', 'kung fu'],
+    'kung fu': ['kung fu', 'martial arts', 'hand to hand combat'],
+    'sword': ['sword fight', 'swordplay', 'swordsman'],
+    'swords': ['sword fight', 'swordplay', 'swordsman'],
+    'spaghetti western': ['spaghetti western', 'gunslinger', 'bounty hunter'],
+    'western': ['western', 'cowboy', 'outlaw', 'frontier'],
+    'giallo': ['giallo', 'murder mystery', 'slasher'],
+    'cyberpunk': ['cyberpunk', 'dystopia', 'futuristic', 'artificial intelligence'],
+    'slasher': ['slasher', 'serial killer', 'masked killer'],
+    'body horror': ['body horror', 'mutation', 'grotesque'],
+    'kaiju': ['giant monster', 'kaiju', 'creature feature'],
+    'neo-noir': ['neo-noir', 'hardboiled', 'femme fatale', 'detective'],
+    'noir': ['film noir', 'private investigator', 'crime noir'],
+    'psychological thriller': ['psychological thriller', 'unreliable narrator', 'paranoia'],
+    'time travel': ['time travel', 'time loop', 'temporal'],
+    'space opera': ['space opera', 'interstellar', 'spaceship'],
+    'heist': ['heist', 'bank robbery', 'caper'],
+    'whodunit': ['whodunit', 'murder mystery', 'detective'],
+    'dark comedy': ['dark comedy', 'black comedy', 'satire'],
+    'coming of age': ['coming of age', 'teenage', 'youth'],
+    'courtroom': ['courtroom drama', 'legal drama', 'trial'],
+    'haunted house': ['haunted house', 'ghost', 'possession']
+}
+
+def _extract_languages(user_input):
+    """Deterministic extraction of ISO-639-1 language codes from prompt."""
+    text = (user_input or '').lower()
+    languages = set()
+    for name, codes in LANGUAGE_MAP.items():
+        if re.search(r'\b' + re.escape(name) + r'\b', text):
+            languages.update(codes)
+    return list(languages)
+
+def _extract_thematic_keywords(user_input):
+    """Deterministic extraction of cinephile sub-genre keyword tags."""
+    text = (user_input or '').lower()
+    keywords = set()
+    for term, kw_list in THEMATIC_KEYWORD_MAP.items():
+        if re.search(r'\b' + re.escape(term) + r'\b', text):
+            keywords.update(kw_list)
+    return list(keywords)
+
 def _extract_year_constraints(user_input):
     """Deterministic extraction of temporal / decade / year bounds from prompt."""
     text = (user_input or '').lower()
@@ -68,6 +147,13 @@ def _extract_year_constraints(user_input):
     if m_range:
         year_min, year_max = int(m_range.group(1)), int(m_range.group(2))
 
+    # Colloquial era phrases
+    if year_max is None and year_min is None:
+        if re.search(r'\b(?:old|classic|vintage|golden age|retro|older)\b', text):
+            year_max = 1999
+        elif re.search(r'\b(?:modern|recent|new|latest)\b', text):
+            year_min = 2015
+
     return year_min, year_max
 
 def _extract_reference_entity(user_input):
@@ -87,36 +173,28 @@ def _extract_reference_entity(user_input):
 
 def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None):
     """
+    100% Self-Contained Semantic NLP Query Engine.
     Parses natural language mood/vibe prompts into TMDB genres, search query, year constraints,
-    thematic keywords, reference entity, and suggested titles with vibe pitches.
-    Grounded with the user's Letterboxd taste anchors (top directors, 5★ favorites, high affinity genres).
-    Cascades across active Gemini models if quota is exhausted on any single model.
+    ISO language codes, thematic keywords, reference entity, and suggested titles.
     """
     active_key = custom_api_key or GEMINI_API_KEY
     det_ymin, det_ymax = _extract_year_constraints(user_input)
     det_ref_entity = _extract_reference_entity(user_input)
+    det_langs = _extract_languages(user_input)
+    det_kws = _extract_thematic_keywords(user_input)
+    det_genres = _fallback_mood_match(user_input)
 
-    if not active_key or active_key == 'YOUR_GEMINI_API_KEY_HERE':
+    # If no valid Gemini key or key revoked, immediately return rich deterministic payload (< 0.1ms)
+    if not active_key or active_key in ('YOUR_GEMINI_API_KEY_HERE', ''):
         return {
-            'genres': _fallback_mood_match(user_input),
+            'genres': det_genres,
             'search_query': user_input.strip(),
             'suggested_titles': [],
             'year_min': det_ymin,
             'year_max': det_ymax,
+            'languages': det_langs,
             'reference_entity': det_ref_entity,
-            'thematic_keywords': []
-        }
-
-    client = _get_genai_client(active_key)
-    if not client:
-        return {
-            'genres': _fallback_mood_match(user_input),
-            'search_query': user_input.strip(),
-            'suggested_titles': [],
-            'year_min': det_ymin,
-            'year_max': det_ymax,
-            'reference_entity': det_ref_entity,
-            'thematic_keywords': []
+            'thematic_keywords': det_kws
         }
 
     # Format user taste context if available
@@ -222,8 +300,9 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
         'suggested_titles': [],
         'year_min': det_ymin,
         'year_max': det_ymax,
+        'languages': det_langs,
         'reference_entity': det_ref_entity,
-        'thematic_keywords': []
+        'thematic_keywords': det_kws
     }
 
 def generate_matchmaker_pitch(movie_dict, user_taste=None, duration_pref='Any', mood_pref='Any', custom_api_key=None):

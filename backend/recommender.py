@@ -532,6 +532,8 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
 
     year_min = ai_analysis.get('year_min') if isinstance(ai_analysis, dict) else None
     year_max = ai_analysis.get('year_max') if isinstance(ai_analysis, dict) else None
+    languages = ai_analysis.get('languages', []) if isinstance(ai_analysis, dict) else []
+    lang_param = "|".join(languages) if languages else None
 
     # 4. TMDB Keyword-Constrained Thematic Discovery
     search_query = (ai_analysis.get('search_query') or clean_raw or '').strip()
@@ -543,7 +545,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
 
     # Check thematic_keywords if available
     thematic_kws = ai_analysis.get('thematic_keywords', []) if isinstance(ai_analysis, dict) else []
-    for t_kw in thematic_kws[:3]:
+    for t_kw in thematic_kws[:4]:
         extra_ids = _get_tmdb_keywords(t_kw, active_tmdb)
         for eid in extra_ids:
             if eid not in kw_ids:
@@ -555,12 +557,13 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                 params = {
                     'api_key': active_tmdb,
                     'with_keywords': "|".join(kw_ids[:8]),
-                    'vote_count.gte': 40,
+                    'vote_count.gte': 20,
                     'vote_average.gte': 6.0,
-                    'sort_by': 'popularity.desc',
-                    'language': 'en-US',
+                    'sort_by': 'vote_average.desc' if (year_max or languages) else 'popularity.desc',
                     'page': page
                 }
+                if lang_param:
+                    params['with_original_language'] = lang_param
                 if year_min:
                     params['primary_release_date.gte'] = f"{year_min}-01-01"
                 if year_max:
@@ -607,9 +610,12 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             discoverUrl = f"{TMDB_BASE_URL}/discover/movie"
             discoverParams = {
                 'api_key': active_tmdb, 'with_genres': genreIdString,
-                'vote_average.gte': 6.4, 'vote_count.gte': 100, 
-                'sort_by': 'popularity.desc', 'language': 'en-US', 'page': 1
+                'vote_average.gte': 6.4, 'vote_count.gte': 30, 
+                'sort_by': 'vote_average.desc' if (year_max or languages) else 'popularity.desc',
+                'page': 1
             }
+            if lang_param:
+                discoverParams['with_original_language'] = lang_param
             if year_min:
                 discoverParams['primary_release_date.gte'] = f"{year_min}-01-01"
             if year_max:
@@ -633,8 +639,8 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                             seen_ids.add(m.get('id'))
                             results.append(m)
 
-    # Filter recommendations: enforce unwatched and year bounds
-    def _passes_year_bounds(m):
+    # Filter recommendations: enforce unwatched, language, and year bounds
+    def _passes_filters(m):
         rel_date = str(m.get('release_date') or m.get('year') or '')
         if rel_date and len(rel_date) >= 4 and rel_date[:4].isdigit():
             myear = int(rel_date[:4])
@@ -642,20 +648,24 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                 return False
             if year_min and myear < year_min:
                 return False
+        if languages:
+            m_lang = (m.get('original_language') or '').lower()
+            if m_lang and m_lang not in languages:
+                return False
         return True
 
     unwatched_directs = []
     for movie in direct_matches:
         m_id = movie.get('id')
         title_norm = titleNormalize(movie.get('title', ''))
-        if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids) and _passes_year_bounds(movie):
+        if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids) and _passes_filters(movie):
             unwatched_directs.append(movie)
 
     unwatched_results = []
     for movie in results:
         m_id = movie.get('id')
         title_norm = titleNormalize(movie.get('title', ''))
-        if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids) and _passes_year_bounds(movie):
+        if (title_norm not in watchedSet_titles) and (m_id not in watchedSet_ids) and _passes_filters(movie):
             unwatched_results.append(movie)
 
     all_candidates = unwatched_directs + unwatched_results

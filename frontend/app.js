@@ -504,8 +504,9 @@ function renderGrid(movies, limit = 21) {
         card.className = 'poster-card';
         card.onclick = () => openSpotlight(m);
 
-        const poster = m.poster_path ? `${IMG500}${m.poster_path}` : '';
-        const year = (m.release_date || '').split('-')[0] || '';
+        const posterPath = (m.poster_path && m.poster_path !== 'null' && m.poster_path !== 'None') ? String(m.poster_path).trim() : '';
+        const poster = posterPath ? (posterPath.startsWith('http') ? posterPath : `${IMG500}${posterPath.startsWith('/') ? '' : '/'}${posterPath}`) : '';
+        const year = (m.release_date || m.year || '').split('-')[0] || '';
         const pct = Math.min(99, Math.max(60, Math.round((m.ai_score || 3.5) * 20)));
         const isSaved = watchlistIds.has(m.id);
 
@@ -529,7 +530,7 @@ function renderGrid(movies, limit = 21) {
         const diaryBtnIcon = isWatched ? (userRating ? `★${userRating}` : '✓') : '👁️';
 
         card.innerHTML = `
-            ${poster ? `<img src="${poster}" alt="${m.title}" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
+            ${poster ? `<img src="${poster}" alt="${m.title}" loading="lazy" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex';"><div class="poster-fallback-ph" style="display:none;width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>` : '<div style="width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>'}
             <div class="wl-card-actions" onclick="event.stopPropagation()">
                 <button class="${diaryBtnClass}" title="${diaryBtnTitle}" onclick="openLogForMovieFromCardId(${m.id})">
                     ${diaryBtnIcon}
@@ -765,13 +766,14 @@ function renderWatchlistGrid(items) {
         card.className = 'poster-card';
         card.onclick = () => openSpotlight(m);
 
-        const poster = m.poster_path ? `${IMG500}${m.poster_path}` : '';
+        const posterPath = (m.poster_path && m.poster_path !== 'null' && m.poster_path !== 'None') ? String(m.poster_path).trim() : '';
+        const poster = posterPath ? (posterPath.startsWith('http') ? posterPath : `${IMG500}${posterPath.startsWith('/') ? '' : '/'}${posterPath}`) : '';
         const year = m.year || '';
         const score = (m.ai_score || 3.8).toFixed(1);
         const runtime = m.runtime ? `${Math.floor(m.runtime/60)}h ${m.runtime%60}m` : '';
 
         card.innerHTML = `
-            ${poster ? `<img src="${poster}" alt="${m.title}" loading="lazy">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
+            ${poster ? `<img src="${poster}" alt="${m.title}" loading="lazy" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex';"><div class="poster-fallback-ph" style="display:none;width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>` : '<div style="width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>'}
             <div class="wl-card-actions" onclick="event.stopPropagation()">
                 <button class="wl-act-btn" title="Remove from Watchlist" onclick="removeFromWatchlistDirect(${m.movie_id})">✕</button>
             </div>
@@ -1770,41 +1772,10 @@ async function submitLoginProfile() {
     }
 }
 
-function updateGeminiNotice() {
-    const geminiInput = document.getElementById('onboard-gemini');
-    const callout = document.getElementById('gemini-status-callout');
-    if (!callout) return;
-    const val = (geminiInput?.value || '').trim();
-    if (val) {
-        callout.style.background = 'rgba(34, 197, 94, 0.08)';
-        callout.style.border = '1px solid rgba(34, 197, 94, 0.25)';
-        callout.style.color = '#4ade80';
-        callout.innerHTML = `
-            <strong style="display:block; margin-bottom:2px; color:#86efac;">✦ Gemini AI Active:</strong>
-            <span>Full conversational mood search, personalized 1-sentence movie pitches, and deep watchlist matching are all unlocked!</span>
-        `;
-    } else {
-        callout.style.background = 'rgba(234, 179, 8, 0.08)';
-        callout.style.border = '1px solid rgba(234, 179, 8, 0.25)';
-        callout.style.color = '#facc15';
-        callout.innerHTML = `
-            <strong style="display:block; margin-bottom:4px; color:#fef08a;">ℹ️ No Gemini Key? No problem!</strong>
-            <span>Your taste profile & star ratings will still work 100% using our built-in offline model.</span>
-            <div style="margin-top:6px; font-weight:600; color:#fde047;">What you miss without Gemini:</div>
-            <ul style="margin:3px 0 0 16px; padding:0; color:#fef08a;">
-                <li><strong>Mood Search:</strong> Works best with simple words (e.g. <em>horror</em>, <em>sci-fi</em>) instead of complex sentences (e.g. <em>"dark moody rainy cyberpunk"</em>).</li>
-                <li><strong>Movie Pitches:</strong> Shows standard summaries instead of personalized 1-sentence AI vibe pitches.</li>
-                <li><strong>Watchlist Matching:</strong> Matches saved movies by genre rather than subtle story themes.</li>
-            </ul>
-        `;
-    }
-}
-
 async function completeOnboarding() {
     const username = document.getElementById('onboard-username')?.value.trim().replace(/^@/, '');
     const pin = document.getElementById('onboard-pin')?.value.trim();
     const tmdb = document.getElementById('onboard-tmdb')?.value.trim();
-    const gemini = document.getElementById('onboard-gemini')?.value.trim();
 
     if (!username) {
         alert(isLetterboxdFallbackActive ? 'Please choose a profile username.' : 'Please provide your Letterboxd username.');
@@ -1855,7 +1826,6 @@ async function completeOnboarding() {
                 username, 
                 pin, 
                 tmdb_key: tmdb, 
-                gemini_key: gemini,
                 skip_scrape: isLetterboxdFallbackActive,
                 favorites: isLetterboxdFallbackActive ? fallbackSelectedMovies : []
             })
