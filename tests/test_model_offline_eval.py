@@ -169,5 +169,66 @@ class TestModelOfflineEvalAndUpgrades(unittest.TestCase):
         print(f"  -> NDCG@10: {metrics['ndcg_10']}")
 
 
+    def test_05_temporal_year_constraint_enforcement(self):
+        """Verify that 'before 2000s' extracts year_max=1999 and strictly excludes post-2000 films."""
+        from backend.gemini_client import _extract_year_constraints
+        
+        # 1. Test extraction on various natural language phrases
+        ymin, ymax = _extract_year_constraints("Something like the odyssey from before 2000s")
+        self.assertEqual(ymax, 1999)
+        self.assertIsNone(ymin)
+        
+        ymin, ymax = _extract_year_constraints("classic 80s sci fi")
+        self.assertEqual(ymin, 1980)
+        self.assertEqual(ymax, 1989)
+
+        ymin, ymax = _extract_year_constraints("90s action thrillers")
+        self.assertEqual(ymin, 1990)
+        self.assertEqual(ymax, 1999)
+
+        ymin, ymax = _extract_year_constraints("post-2015 psychological horror")
+        self.assertEqual(ymin, 2016)
+
+        # 2. Test that discovery candidate filtering discards post-2000 candidates
+        candidates = [
+            {'id': 101, 'title': 'Jason and the Argonauts', 'release_date': '1963-06-19', 'genre_ids': [12, 14]},
+            {'id': 102, 'title': 'The Odyssey', 'release_date': '1997-05-18', 'genre_ids': [12, 18]},
+            {'id': 103, 'title': 'Avengers: Endgame', 'release_date': '2019-04-26', 'genre_ids': [28, 12]},
+            {'id': 104, 'title': 'Facing El Chapo', 'release_date': '2024-01-10', 'genre_ids': [99]}
+        ]
+
+        with patch('backend.in_memory_model.get_diary_training_df', return_value=self.sample_df):
+            model, cols, vec, encoders = train_user_model_in_memory('test_cinephile')
+            with patch('backend.recommender.http_session.get') as mock_get:
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {'results': candidates}
+                mock_get.return_value = mock_resp
+
+                results = analyze(
+                    watchedSet_titles=set(),
+                    watchedSet_ids=set(),
+                    hated_movies=[],
+                    ai_analysis={
+                        'genres': ['Adventure', 'Fantasy'],
+                        'search_query': 'greek mythology epic quest',
+                        'suggested_titles': [],
+                        'year_max': 1999
+                    },
+                    ai_model=model,
+                    ai_columns=cols,
+                    ai_vectorizer=vec,
+                    ai_encoders=encoders,
+                    raw_prompt="Something like the odyssey from before 2000s",
+                    source="discover"
+                )
+
+                result_titles = [r['title'] for r in results]
+                self.assertIn('Jason and the Argonauts', result_titles)
+                self.assertIn('The Odyssey', result_titles)
+                self.assertNotIn('Avengers: Endgame', result_titles)
+                self.assertNotIn('Facing El Chapo', result_titles)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -31,19 +31,75 @@ def _get_genai_client(active_key=None):
     except Exception:
         return None
 
+def _extract_year_constraints(user_input):
+    """Deterministic extraction of temporal / decade / year bounds from prompt."""
+    text = (user_input or '').lower()
+    year_min, year_max = None, None
+
+    # Before / Pre X
+    m_before = re.search(r'(?:before|pre[- ]?|prior to|older than|earlier than)\s*(?:the\s*)?(\d{4})s?', text)
+    if m_before:
+        y = int(m_before.group(1))
+        year_max = y - 1 if text.find('s') == -1 and not m_before.group(0).endswith('s') else y - 1
+        if m_before.group(0).endswith('s') or '00s' in m_before.group(0):
+            year_max = y - 1 if y % 100 == 0 else y + 9
+
+    # After / Post X
+    m_after = re.search(r'(?:after|post[- ]?|newer than|later than|since)\s*(?:the\s*)?(\d{4})s?', text)
+    if m_after:
+        y = int(m_after.group(1))
+        year_min = y + 1 if not m_after.group(0).endswith('s') else y + 10
+
+    # Specific Decades
+    decade_patterns = [
+        (r'\b(19[2-9]0|20[0-2]0)s\b', lambda y: (y, y + 9)),
+        (r'\b(?:the\s*)?([2-9]0)s\b', lambda y: (1900 + y if y >= 20 else 2000 + y, 1900 + y + 9 if y >= 20 else 2000 + y + 9)),
+    ]
+    for pat, mapper in decade_patterns:
+        m_dec = re.search(pat, text)
+        if m_dec and not m_before and not m_after:
+            y = int(m_dec.group(1))
+            ymin, ymax = mapper(y)
+            year_min, year_max = ymin, ymax
+            break
+
+    # Year Ranges: "from 1990 to 1999" or "1995-2005"
+    m_range = re.search(r'\b(19\d{2}|20\d{2})\s*(?:to|-|until)\s*(19\d{2}|20\d{2})\b', text)
+    if m_range:
+        year_min, year_max = int(m_range.group(1)), int(m_range.group(2))
+
+    return year_min, year_max
+
 def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None):
     """
-    Parses natural language mood/vibe prompts into TMDB genres, search query, and suggested titles with vibe pitches.
+    Parses natural language mood/vibe prompts into TMDB genres, search query, year constraints,
+    thematic keywords, and suggested titles with vibe pitches.
     Grounded with the user's Letterboxd taste anchors (top directors, 5★ favorites, high affinity genres).
     Cascades across active Gemini models if quota is exhausted on any single model.
     """
     active_key = custom_api_key or GEMINI_API_KEY
+    det_ymin, det_ymax = _extract_year_constraints(user_input)
+
     if not active_key or active_key == 'YOUR_GEMINI_API_KEY_HERE':
-        return {'genres': _fallback_mood_match(user_input), 'search_query': user_input.strip(), 'suggested_titles': []}
+        return {
+            'genres': _fallback_mood_match(user_input),
+            'search_query': user_input.strip(),
+            'suggested_titles': [],
+            'year_min': det_ymin,
+            'year_max': det_ymax,
+            'thematic_keywords': []
+        }
 
     client = _get_genai_client(active_key)
     if not client:
-        return {'genres': _fallback_mood_match(user_input), 'search_query': user_input.strip(), 'suggested_titles': []}
+        return {
+            'genres': _fallback_mood_match(user_input),
+            'search_query': user_input.strip(),
+            'suggested_titles': [],
+            'year_min': det_ymin,
+            'year_max': det_ymax,
+            'thematic_keywords': []
+        }
 
     # Format user taste context if available
     taste_prompt_block = ""
@@ -69,15 +125,19 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
     prompt = (
         f"You are an elite cinephile movie assistant with deep cinematic knowledge.\n\n"
         f"{taste_prompt_block}"
-        f"The user wants movie recommendations for the following mood / vibe:\n"
+        f"The user wants movie recommendations for the following prompt / vibe / reference:\n"
         f"\"{user_input}\"\n\n"
-        f"Provide a curated selection of 12-18 specific movie titles matching this exact aesthetic and mood.\n"
+        f"Analyze the prompt carefully. If the user mentions a reference myth, concept, or era (e.g. 'the odyssey', 'greek mythology', 'cyberpunk', 'before 2000s'), identify the core narrative tropes and strictly enforce any era/time restrictions.\n\n"
+        f"Provide a curated selection of 12-18 specific, high-acclaim movie titles matching this exact aesthetic and time constraint.\n"
         f"Return a clean JSON object with:\n"
         f"- 'genres': list of matching TMDB genres from: {', '.join(VALID_GENRES)}\n"
-        f"- 'search_query': specific keyword, director, or theme (e.g. 'neo-noir', 'psychological thriller')\n"
+        f"- 'search_query': semantic keyword search phrase (e.g. 'greek mythology voyage epic quest', 'rainy neo noir')\n"
+        f"- 'year_min': integer minimum release year if constrained by prompt (or null)\n"
+        f"- 'year_max': integer maximum release year if constrained by prompt (or null, e.g. 1999 if 'before 2000s')\n"
+        f"- 'thematic_keywords': list of 3-5 specific thematic keywords (e.g. ['greek mythology', 'heroic voyage', 'epic quest'])\n"
         f"- 'suggested_titles': list of objects with:\n"
-        f"    - 'title': exact movie title (e.g. 'Blade Runner 2049')\n"
-        f"    - 'year': release year string (e.g. '2017')\n"
+        f"    - 'title': exact movie title (e.g. 'Jason and the Argonauts')\n"
+        f"    - 'year': release year string (e.g. '1963')\n"
         f"    - 'vibe_pitch': 1 concise sentence explaining why this film matches the mood and cinematic taste\n\n"
         f"Return ONLY valid JSON."
     )
@@ -102,6 +162,13 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
             data = json.loads(raw)
             data['genres'] = [g for g in data.get('genres', []) if g in VALID_GENRES]
             
+            # Enforce deterministic year constraints if AI missed them
+            ai_ymin = data.get('year_min')
+            ai_ymax = data.get('year_max')
+            data['year_min'] = det_ymin if det_ymin is not None else (int(ai_ymin) if ai_ymin and str(ai_ymin).isdigit() else None)
+            data['year_max'] = det_ymax if det_ymax is not None else (int(ai_ymax) if ai_ymax and str(ai_ymax).isdigit() else None)
+            data['thematic_keywords'] = [str(k).strip() for k in data.get('thematic_keywords', []) if k]
+
             # Normalize suggested_titles format
             raw_titles = data.get('suggested_titles', [])
             normalized_titles = []
@@ -129,7 +196,14 @@ def interpret_query_with_ai(user_input, custom_api_key=None, taste_context=None)
             continue
 
     # If all models exhausted, use deterministic heuristic parser
-    return {'genres': _fallback_mood_match(user_input), 'search_query': user_input.strip(), 'suggested_titles': []}
+    return {
+        'genres': _fallback_mood_match(user_input),
+        'search_query': user_input.strip(),
+        'suggested_titles': [],
+        'year_min': det_ymin,
+        'year_max': det_ymax,
+        'thematic_keywords': []
+    }
 
 def generate_matchmaker_pitch(movie_dict, user_taste=None, duration_pref='Any', mood_pref='Any', custom_api_key=None):
     """
