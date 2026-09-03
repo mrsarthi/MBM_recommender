@@ -924,7 +924,7 @@ def get_user_watchlist(username: str):
                 SELECT 
                     m.movie_id, m.movie_id AS id, m.title, m.year, m.genres, m.overview,
                     m.director, m.cast_members AS cast, m.runtime, m.vote_average,
-                    m.poster_path, m.backdrop_path, w.added_date
+                    m.poster_path, m.backdrop_path, w.added_date, w.id AS watchlist_entry_id
                 FROM user_watchlist w
                 JOIN movies m ON w.movie_id = m.movie_id
                 WHERE w.user_id = %s

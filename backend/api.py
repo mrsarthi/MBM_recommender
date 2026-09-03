@@ -97,10 +97,9 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             requested_user = env_user
 
         if requested_user:
-            if env_user and requested_user == env_user:
-                return requested_user
             try:
                 user_obj = get_user(requested_user)
+                # If user exists and has NO PIN configured, allow unauthenticated access
                 if user_obj and not user_obj.get('pin_hash'):
                     return requested_user
             except Exception:
@@ -158,19 +157,35 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if not origin:
             return None
         origin = origin.strip().rstrip('/')
-        if (
-            origin.endswith('.vercel.app') or
-            origin.endswith('.onrender.com') or
-            origin in [
-                'http://localhost:8899',
-                'http://127.0.0.1:8899',
-                'http://localhost:3000',
-                'http://127.0.0.1:3000',
-                'http://localhost:5173',
-                'http://127.0.0.1:5173'
-            ]
-        ):
+        
+        # Explicit whitelist of local development and production origins
+        allowed_set = {
+            'http://localhost:8899',
+            'http://127.0.0.1:8899',
+            'http://localhost:3000',
+            'http://127.0.0.1:3000',
+            'http://localhost:5173',
+            'http://127.0.0.1:5173'
+        }
+        
+        # Auto-allow the specific deployment URL if running on Render or Vercel
+        render_url = os.getenv('RENDER_EXTERNAL_URL')
+        if render_url:
+            allowed_set.add(render_url.strip().rstrip('/'))
+        vercel_url = os.getenv('VERCEL_URL')
+        if vercel_url:
+            allowed_set.add(f"https://{vercel_url.strip().rstrip('/')}")
+            
+        # Optional custom domains specified via environment
+        env_origins = [o.strip().rstrip('/') for o in os.getenv('ALLOWED_ORIGINS', '').split(',') if o.strip()]
+        allowed_set.update(env_origins)
+        
+        if origin in allowed_set:
             return origin
+        return None
+
+    def list_directory(self, path):
+        self.send_error(403, "Directory listing forbidden")
         return None
 
     def end_headers(self):
@@ -632,7 +647,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                     'vote_average': float(r.get('vote_average') or 7.0),
                     'ai_score': scores[i],
                     'clusters': clusters,
-                    'added_date': str(r.get('added_date') or '')
+                    'added_date': str(r.get('added_date') or ''),
+                    'watchlist_entry_id': int(r.get('watchlist_entry_id') or 0)
                 })
 
             # Filter by Cluster
@@ -655,10 +671,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             # Sorting
             if sort_mode == 'Highest Predicted ★':
                 items.sort(key=lambda x: x.get('ai_score', 0), reverse=True)
-            elif sort_mode == 'Shortest Runtime (< 100m)':
+            elif sort_mode in ('Shortest Runtime (< 100m)', 'Runtime (Shortest First)'):
                 items.sort(key=lambda x: x.get('runtime', 999) if x.get('runtime', 0) > 0 else 999)
-            elif sort_mode == 'Recently Added':
-                items.sort(key=lambda x: x.get('added_date', ''), reverse=True)
+            elif sort_mode in ('Recently Added', 'Recently Added First'):
+                items.sort(key=lambda x: (x.get('added_date', ''), x.get('watchlist_entry_id', 0)), reverse=True)
             elif sort_mode == 'TMDB Rating':
                 items.sort(key=lambda x: x.get('vote_average', 0), reverse=True)
 
@@ -669,11 +685,13 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
     def _handle_add_watchlist(self, body):
         user = self._get_request_user(body, require_auth=True)
-        if not user:
-            self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
+        movie_data = body.get('movie') if isinstance(body.get('movie'), dict) else body
+        movie_id = movie_data.get('movie_id') or movie_data.get('id')
+        if not user or not movie_id:
+            self._send_json({'success': False, 'message': 'Authentication and valid movie data required'}, 401 if not user else 400)
             return
 
-        ok, msg = add_to_user_watchlist(user, body)
+        ok, msg = add_to_user_watchlist(user, movie_data)
         self._send_json({'success': ok, 'message': msg})
 
     def _handle_remove_watchlist(self, body):
@@ -687,10 +705,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         self._send_json({'success': ok, 'message': msg})
 
     def _handle_pick_tonight(self, body):
-        user = self._get_request_user(body)
-        tmdb_key, _ = self._get_request_keys(user=user, body=body)
+        user = self._get_request_user(body, require_auth=True)
+        tmdb_key, gemini_key = self._get_request_keys(user=user, body=body)
         if not user:
-            self._send_json({'success': False, 'movie': None, 'message': 'Username is required'})
+            self._send_json({'success': False, 'movie': None, 'message': 'Authentication required. Please log in.'}, 401)
             return
 
         ai_model, ai_columns, ai_vectorizer, ai_encoders = get_or_train_user_model(user)

@@ -27,6 +27,17 @@ function normalizeMovieTitle(t) {
 const watchlistCache = new Map();
 const diaryCache = new Map();
 
+// ── XSS Sanitizer Helper ──
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 // ── IndexedDB Storage for Private Credentials & Offline State ──
 const MBMRStorage = {
     dbName: 'mbmr_local_db',
@@ -267,6 +278,9 @@ async function loadStatus() {
     }
 }
 
+// Safety no-op for backward compatibility
+async function loadWatchlistIds() { return; }
+
 function updateWatchlistBadge(count) {
     const badge = document.getElementById('rail-watchlist-badge');
     const num = document.getElementById('wl-count-num');
@@ -338,7 +352,7 @@ async function generateRecommendations() {
     
     const displayPrompt = prompt.length > 28 ? prompt.slice(0, 28) + '...' : prompt;
     if (dock) {
-        dock.innerHTML = `<span class="dock-loading"><span class="dock-spinner"></span> Curating matches for "${displayPrompt}"...</span>`;
+        dock.innerHTML = `<span class="dock-loading"><span class="dock-spinner"></span> Curating matches for "${escapeHtml(displayPrompt)}"...</span>`;
     }
 
     try {
@@ -523,8 +537,8 @@ function renderGrid(movies, limit = 21) {
             </div>
             <span class="${badgeClass}">${badgeText}</span>
             <div class="poster-info">
-                <div class="poster-name">${m.title}</div>
-                <div class="poster-sub">${isWatched ? (userRating ? `Watched · ★ ${userRating}` : 'Watched') : (m.is_direct_match ? 'Direct Match · ' : 'Match: ' + pct + '%')}${year ? ' · ' + year : ''}</div>
+                <div class="poster-name">${escapeHtml(m.title)}</div>
+                <div class="poster-sub">${isWatched ? (userRating ? `Watched · ★ ${userRating}` : 'Watched') : (m.is_direct_match ? 'Direct Match · ' : 'Match: ' + pct + '%')}${year ? ' · ' + escapeHtml(year) : ''}</div>
             </div>
         `;
         grid.appendChild(card);
@@ -782,8 +796,8 @@ function renderWatchlistGrid(items) {
             <span class="poster-badge">★ ${score}</span>
             ${runtime ? `<span class="wl-runtime-tag">${runtime}</span>` : ''}
             <div class="poster-info">
-                <div class="poster-name">${m.title}</div>
-                <div class="poster-sub">${year}${m.clusters?.length ? ' · ' + m.clusters[0] : ''}</div>
+                <div class="poster-name">${escapeHtml(m.title)}</div>
+                <div class="poster-sub">${escapeHtml(year)}${m.clusters?.length ? ' · ' + escapeHtml(m.clusters[0]) : ''}</div>
             </div>
         `;
         grid.appendChild(card);
@@ -870,11 +884,23 @@ async function executePickTonight() {
     const duration = document.getElementById('pick-duration').value;
     const mood = document.getElementById('pick-mood').value;
     const resArea = document.getElementById('pick-result-area');
+    const loaderEl = document.getElementById('pick-loading-spinner');
+    const rollBtn = document.getElementById('roll-match-btn') || document.querySelector('.roll-match-btn');
+    const originalText = rollBtn ? rollBtn.innerHTML : '🎲 Roll AI Match from Watchlist';
+
+    if (resArea) resArea.style.display = 'none';
+    if (loaderEl) loaderEl.style.display = 'flex';
+    if (rollBtn) {
+        rollBtn.disabled = true;
+        rollBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:8px;"></span> Scoring Watchlist...';
+    }
     
     try {
-        const res = await fetch(`${API}/api/watchlist/pick_tonight`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ duration, mood })
+        const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+        const res = await mbmrFetch(`${API}/api/watchlist/pick_tonight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ duration, mood, username })
         });
         const data = await res.json();
         if (!data.success || !data.movie) {
@@ -895,6 +921,12 @@ async function executePickTonight() {
         resArea.style.display = 'flex';
     } catch(e) {
         alert('Error picking movie.');
+    } finally {
+        if (loaderEl) loaderEl.style.display = 'none';
+        if (rollBtn) {
+            rollBtn.disabled = false;
+            rollBtn.innerHTML = originalText;
+        }
     }
 }
 
@@ -949,7 +981,6 @@ async function triggerWatchlistSync() {
         watchlistCache.clear();
         try { localStorage.removeItem('mbmr_cached_watchlist'); } catch(e) {}
         await loadStatus();
-        await loadWatchlistIds();
         await fetchWatchlist(true);
     } catch(e) {
         if (msg) msg.textContent = 'Sync error.';
@@ -1217,8 +1248,8 @@ function renderJournal(films) {
                     </div>
                     <div class="j-date">${date}</div>
                     <div class="j-info">
-                        <div class="j-title">${title}<span class="j-year">${year ? '(' + year + ')' : ''}</span></div>
-                        ${genres ? `<div class="j-genres">${genres}</div>` : ''}
+                        <div class="j-title">${escapeHtml(title)}<span class="j-year">${year ? '(' + escapeHtml(year) + ')' : ''}</span></div>
+                        ${genres ? `<div class="j-genres">${escapeHtml(genres)}</div>` : ''}
                     </div>
                     <div class="j-stars">${stars}</div>
                 `;
@@ -1240,11 +1271,11 @@ function renderJournal(films) {
                 const loadMode = idx < 12 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"';
 
                 card.innerHTML = `
-                    ${poster ? `<img src="${poster}" alt="${title}" ${loadMode} decoding="async" onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 300\\' fill=\\'%23222\\'%3E%3Crect width=\\'100%25\\' height=\\'100%25\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'24\\' fill=\\'%23666\\'%3E🎬%3C/text%3E%3C/svg%3E';">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
+                    ${poster ? `<img src="${poster}" alt="${escapeHtml(title)}" ${loadMode} decoding="async" onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 300\\' fill=\\'%23222\\'%3E%3Crect width=\\'100%25\\' height=\\'100%25\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'24\\' fill=\\'%23666\\'%3E🎬%3C/text%3E%3C/svg%3E';">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
                     ${rating ? `<span class="poster-badge journal-badge">★ ${rating}</span>` : ''}
                     <div class="poster-info">
-                        <div class="poster-name">${title}</div>
-                        <div class="poster-sub">${year}${f.Date ? ' · Logged ' + fmtDate(f.Date) : ''}</div>
+                        <div class="poster-name">${escapeHtml(title)}</div>
+                        <div class="poster-sub">${escapeHtml(year)}${f.Date ? ' · Logged ' + fmtDate(f.Date) : ''}</div>
                     </div>
                 `;
                 gridEl.appendChild(card);
@@ -1501,6 +1532,12 @@ async function submitLogMovie() {
         ? selectedLogMovie.genres.join(', ') 
         : (selectedLogMovie.genres || '');
     const yearVal = (selectedLogMovie.release_date || selectedLogMovie.year || '').split('-')[0].replace('.0', '');
+    const logBtn = document.querySelector('#log-movie-modal .modal-submit');
+    const origLogText = logBtn ? logBtn.innerHTML : 'Confirm & Log to Diary';
+    if (logBtn) {
+        logBtn.disabled = true;
+        logBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:6px;"></span> Saving to Diary...';
+    }
 
     try {
         const res = await fetch(`${API}/api/log_movie`, { 
@@ -1545,6 +1582,11 @@ async function submitLogMovie() {
     } catch(err) { 
         console.error('Error logging movie:', err);
         showToast('Failed to log film. Please try again.', '⚠️'); 
+    } finally {
+        if (logBtn) {
+            logBtn.disabled = false;
+            logBtn.innerHTML = origLogText;
+        }
     }
 }
 
@@ -1760,6 +1802,13 @@ async function submitLoginProfile() {
         return;
     }
 
+    const loginBtn = document.getElementById('login-submit-btn') || document.querySelector('#onboard-form-login .sp-btn.primary');
+    const originalLoginText = loginBtn ? loginBtn.innerHTML : 'Log In to Profile ✦';
+    if (loginBtn) {
+        loginBtn.disabled = true;
+        loginBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:6px;"></span> Unlocking Profile...';
+    }
+
     try {
         const res = await fetch(`${API}/api/auth/login`, {
             method: 'POST',
@@ -1789,15 +1838,24 @@ async function submitLoginProfile() {
         watchlistCache.clear();
         diaryCache.clear();
 
-        // Fetch fresh data before closing modal
-        await loadStatus();
-        await loadWatchlistIds();
-        await fetchWatchlist();
-        if (typeof fetchDiary === 'function') fetchDiary();
-        generateRecommendations();
+        // Close modal immediately upon successful authentication
         closeOnboardingModal();
+
+        // Safely refresh UI state in background
+        try {
+            await loadStatus();
+            await fetchWatchlist(true);
+            if (typeof fetchDiary === 'function') fetchDiary(true);
+        } catch(uiErr) {
+            console.warn('Post-login background refresh error:', uiErr);
+        }
     } catch(e) {
         if (errEl) { errEl.textContent = 'Connection error. Please try again.'; errEl.style.display = 'block'; }
+    } finally {
+        if (loginBtn) {
+            loginBtn.disabled = false;
+            loginBtn.innerHTML = originalLoginText;
+        }
     }
 }
 
@@ -1902,7 +1960,6 @@ async function completeOnboarding() {
 
                     // Fetch and render new data FIRST while progress modal is still displayed
                     await loadStatus();
-                    await loadWatchlistIds();
                     await fetchWatchlist();
                     if (typeof fetchDiary === 'function') fetchDiary();
                     generateRecommendations();
@@ -1962,12 +2019,12 @@ async function handleOnboardCSVSelected(event) {
     if (!usernameInput.value.trim()) usernameInput.value = username;
 
     const label = document.getElementById('onboard-csv-label');
-    if (label) label.innerHTML = `⏳ Reading <strong>${file.name}</strong>...`;
+    if (label) label.innerHTML = `⏳ Reading <strong>${escapeHtml(file.name)}</strong>...`;
 
     const reader = new FileReader();
     reader.onload = async (e) => {
         const text = e.target.result;
-        if (label) label.innerHTML = `⚡ Uploading & calibrating AI on <strong>${file.name}</strong>...`;
+        if (label) label.innerHTML = `⚡ Uploading & calibrating AI on <strong>${escapeHtml(file.name)}</strong>...`;
         try {
             const res = await fetch(`${API}/api/import_csv`, {
                 method: 'POST',
@@ -2037,7 +2094,6 @@ async function handleSyncCSVSelected(event) {
 
             if (msg) msg.textContent = final.message;
             await loadStatus();
-            await loadWatchlistIds();
             await fetchWatchlist();
             if (typeof fetchDiary === 'function') fetchDiary();
         } catch(err) {
