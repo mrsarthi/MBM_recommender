@@ -632,7 +632,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                     'vote_average': float(r.get('vote_average') or 7.0),
                     'ai_score': scores[i],
                     'clusters': clusters,
-                    'added_date': str(r.get('added_date') or '')
+                    'added_date': str(r.get('added_date') or ''),
+                    'watchlist_entry_id': int(r.get('watchlist_entry_id') or 0)
                 })
 
             # Filter by Cluster
@@ -655,10 +656,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             # Sorting
             if sort_mode == 'Highest Predicted ★':
                 items.sort(key=lambda x: x.get('ai_score', 0), reverse=True)
-            elif sort_mode == 'Shortest Runtime (< 100m)':
+            elif sort_mode in ('Shortest Runtime (< 100m)', 'Runtime (Shortest First)'):
                 items.sort(key=lambda x: x.get('runtime', 999) if x.get('runtime', 0) > 0 else 999)
-            elif sort_mode == 'Recently Added':
-                items.sort(key=lambda x: x.get('added_date', ''), reverse=True)
+            elif sort_mode in ('Recently Added', 'Recently Added First'):
+                items.sort(key=lambda x: (x.get('added_date', ''), x.get('watchlist_entry_id', 0)), reverse=True)
             elif sort_mode == 'TMDB Rating':
                 items.sort(key=lambda x: x.get('vote_average', 0), reverse=True)
 
@@ -669,11 +670,12 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
     def _handle_add_watchlist(self, body):
         user = self._get_request_user(body, require_auth=True)
-        if not user:
-            self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
+        movie_data = body.get('movie')
+        if not user or not movie_data:
+            self._send_json({'success': False, 'message': 'Authentication and movie data required'}, 401 if not user else 400)
             return
 
-        ok, msg = add_to_user_watchlist(user, body)
+        ok, msg = add_to_user_watchlist(user, movie_data)
         self._send_json({'success': ok, 'message': msg})
 
     def _handle_remove_watchlist(self, body):
@@ -688,7 +690,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
     def _handle_pick_tonight(self, body):
         user = self._get_request_user(body)
-        tmdb_key, _ = self._get_request_keys(user=user, body=body)
+        tmdb_key, gemini_key = self._get_request_keys(user=user, body=body)
         if not user:
             self._send_json({'success': False, 'movie': None, 'message': 'Username is required'})
             return

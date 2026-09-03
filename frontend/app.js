@@ -267,6 +267,9 @@ async function loadStatus() {
     }
 }
 
+// Safety no-op for backward compatibility
+async function loadWatchlistIds() { return; }
+
 function updateWatchlistBadge(count) {
     const badge = document.getElementById('rail-watchlist-badge');
     const num = document.getElementById('wl-count-num');
@@ -872,9 +875,11 @@ async function executePickTonight() {
     const resArea = document.getElementById('pick-result-area');
     
     try {
-        const res = await fetch(`${API}/api/watchlist/pick_tonight`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ duration, mood })
+        const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+        const res = await mbmrFetch(`${API}/api/watchlist/pick_tonight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ duration, mood, username })
         });
         const data = await res.json();
         if (!data.success || !data.movie) {
@@ -949,7 +954,6 @@ async function triggerWatchlistSync() {
         watchlistCache.clear();
         try { localStorage.removeItem('mbmr_cached_watchlist'); } catch(e) {}
         await loadStatus();
-        await loadWatchlistIds();
         await fetchWatchlist(true);
     } catch(e) {
         if (msg) msg.textContent = 'Sync error.';
@@ -1789,13 +1793,17 @@ async function submitLoginProfile() {
         watchlistCache.clear();
         diaryCache.clear();
 
-        // Fetch fresh data before closing modal
-        await loadStatus();
-        await loadWatchlistIds();
-        await fetchWatchlist();
-        if (typeof fetchDiary === 'function') fetchDiary();
-        generateRecommendations();
+        // Close modal immediately upon successful authentication
         closeOnboardingModal();
+
+        // Safely refresh UI state in background
+        try {
+            await loadStatus();
+            await fetchWatchlist(true);
+            if (typeof fetchDiary === 'function') fetchDiary(true);
+        } catch(uiErr) {
+            console.warn('Post-login background refresh error:', uiErr);
+        }
     } catch(e) {
         if (errEl) { errEl.textContent = 'Connection error. Please try again.'; errEl.style.display = 'block'; }
     }
@@ -1902,7 +1910,6 @@ async function completeOnboarding() {
 
                     // Fetch and render new data FIRST while progress modal is still displayed
                     await loadStatus();
-                    await loadWatchlistIds();
                     await fetchWatchlist();
                     if (typeof fetchDiary === 'function') fetchDiary();
                     generateRecommendations();
@@ -2037,7 +2044,6 @@ async function handleSyncCSVSelected(event) {
 
             if (msg) msg.textContent = final.message;
             await loadStatus();
-            await loadWatchlistIds();
             await fetchWatchlist();
             if (typeof fetchDiary === 'function') fetchDiary();
         } catch(err) {
