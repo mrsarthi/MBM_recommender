@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mbmr-shell-v6.3';
+const CACHE_NAME = 'mbmr-shell-v6.4';
 const IMAGE_CACHE_NAME = 'mbmr-images-v1';
 
 const STATIC_PRECACHE = [

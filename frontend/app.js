@@ -649,7 +649,7 @@ function renderWatchlistSkeleton(count = 6) {
     }
 }
 
-const WATCHLIST_PAGE_SIZE = 48;
+const WATCHLIST_PAGE_SIZE = 49;
 let watchlistCurrentPage = 1;
 let currentWatchlistItems = [];
 let _inFlightWatchlist = null;
