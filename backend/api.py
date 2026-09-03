@@ -685,9 +685,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
     def _handle_add_watchlist(self, body):
         user = self._get_request_user(body, require_auth=True)
-        movie_data = body.get('movie')
-        if not user or not movie_data:
-            self._send_json({'success': False, 'message': 'Authentication and movie data required'}, 401 if not user else 400)
+        movie_data = body.get('movie') if isinstance(body.get('movie'), dict) else body
+        movie_id = movie_data.get('movie_id') or movie_data.get('id')
+        if not user or not movie_id:
+            self._send_json({'success': False, 'message': 'Authentication and valid movie data required'}, 401 if not user else 400)
             return
 
         ok, msg = add_to_user_watchlist(user, movie_data)
