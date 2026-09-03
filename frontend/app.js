@@ -27,6 +27,17 @@ function normalizeMovieTitle(t) {
 const watchlistCache = new Map();
 const diaryCache = new Map();
 
+// ── XSS Sanitizer Helper ──
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 // ── IndexedDB Storage for Private Credentials & Offline State ──
 const MBMRStorage = {
     dbName: 'mbmr_local_db',
@@ -341,7 +352,7 @@ async function generateRecommendations() {
     
     const displayPrompt = prompt.length > 28 ? prompt.slice(0, 28) + '...' : prompt;
     if (dock) {
-        dock.innerHTML = `<span class="dock-loading"><span class="dock-spinner"></span> Curating matches for "${displayPrompt}"...</span>`;
+        dock.innerHTML = `<span class="dock-loading"><span class="dock-spinner"></span> Curating matches for "${escapeHtml(displayPrompt)}"...</span>`;
     }
 
     try {
@@ -526,8 +537,8 @@ function renderGrid(movies, limit = 21) {
             </div>
             <span class="${badgeClass}">${badgeText}</span>
             <div class="poster-info">
-                <div class="poster-name">${m.title}</div>
-                <div class="poster-sub">${isWatched ? (userRating ? `Watched · ★ ${userRating}` : 'Watched') : (m.is_direct_match ? 'Direct Match · ' : 'Match: ' + pct + '%')}${year ? ' · ' + year : ''}</div>
+                <div class="poster-name">${escapeHtml(m.title)}</div>
+                <div class="poster-sub">${isWatched ? (userRating ? `Watched · ★ ${userRating}` : 'Watched') : (m.is_direct_match ? 'Direct Match · ' : 'Match: ' + pct + '%')}${year ? ' · ' + escapeHtml(year) : ''}</div>
             </div>
         `;
         grid.appendChild(card);
@@ -785,8 +796,8 @@ function renderWatchlistGrid(items) {
             <span class="poster-badge">★ ${score}</span>
             ${runtime ? `<span class="wl-runtime-tag">${runtime}</span>` : ''}
             <div class="poster-info">
-                <div class="poster-name">${m.title}</div>
-                <div class="poster-sub">${year}${m.clusters?.length ? ' · ' + m.clusters[0] : ''}</div>
+                <div class="poster-name">${escapeHtml(m.title)}</div>
+                <div class="poster-sub">${escapeHtml(year)}${m.clusters?.length ? ' · ' + escapeHtml(m.clusters[0]) : ''}</div>
             </div>
         `;
         grid.appendChild(card);
@@ -1221,8 +1232,8 @@ function renderJournal(films) {
                     </div>
                     <div class="j-date">${date}</div>
                     <div class="j-info">
-                        <div class="j-title">${title}<span class="j-year">${year ? '(' + year + ')' : ''}</span></div>
-                        ${genres ? `<div class="j-genres">${genres}</div>` : ''}
+                        <div class="j-title">${escapeHtml(title)}<span class="j-year">${year ? '(' + escapeHtml(year) + ')' : ''}</span></div>
+                        ${genres ? `<div class="j-genres">${escapeHtml(genres)}</div>` : ''}
                     </div>
                     <div class="j-stars">${stars}</div>
                 `;
@@ -1244,11 +1255,11 @@ function renderJournal(films) {
                 const loadMode = idx < 12 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"';
 
                 card.innerHTML = `
-                    ${poster ? `<img src="${poster}" alt="${title}" ${loadMode} decoding="async" onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 300\\' fill=\\'%23222\\'%3E%3Crect width=\\'100%25\\' height=\\'100%25\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'24\\' fill=\\'%23666\\'%3E🎬%3C/text%3E%3C/svg%3E';">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
+                    ${poster ? `<img src="${poster}" alt="${escapeHtml(title)}" ${loadMode} decoding="async" onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 300\\' fill=\\'%23222\\'%3E%3Crect width=\\'100%25\\' height=\\'100%25\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'24\\' fill=\\'%23666\\'%3E🎬%3C/text%3E%3C/svg%3E';">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
                     ${rating ? `<span class="poster-badge journal-badge">★ ${rating}</span>` : ''}
                     <div class="poster-info">
-                        <div class="poster-name">${title}</div>
-                        <div class="poster-sub">${year}${f.Date ? ' · Logged ' + fmtDate(f.Date) : ''}</div>
+                        <div class="poster-name">${escapeHtml(title)}</div>
+                        <div class="poster-sub">${escapeHtml(year)}${f.Date ? ' · Logged ' + fmtDate(f.Date) : ''}</div>
                     </div>
                 `;
                 gridEl.appendChild(card);
@@ -1969,12 +1980,12 @@ async function handleOnboardCSVSelected(event) {
     if (!usernameInput.value.trim()) usernameInput.value = username;
 
     const label = document.getElementById('onboard-csv-label');
-    if (label) label.innerHTML = `⏳ Reading <strong>${file.name}</strong>...`;
+    if (label) label.innerHTML = `⏳ Reading <strong>${escapeHtml(file.name)}</strong>...`;
 
     const reader = new FileReader();
     reader.onload = async (e) => {
         const text = e.target.result;
-        if (label) label.innerHTML = `⚡ Uploading & calibrating AI on <strong>${file.name}</strong>...`;
+        if (label) label.innerHTML = `⚡ Uploading & calibrating AI on <strong>${escapeHtml(file.name)}</strong>...`;
         try {
             const res = await fetch(`${API}/api/import_csv`, {
                 method: 'POST',

@@ -97,10 +97,9 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             requested_user = env_user
 
         if requested_user:
-            if env_user and requested_user == env_user:
-                return requested_user
             try:
                 user_obj = get_user(requested_user)
+                # If user exists and has NO PIN configured, allow unauthenticated access
                 if user_obj and not user_obj.get('pin_hash'):
                     return requested_user
             except Exception:
@@ -158,19 +157,35 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if not origin:
             return None
         origin = origin.strip().rstrip('/')
-        if (
-            origin.endswith('.vercel.app') or
-            origin.endswith('.onrender.com') or
-            origin in [
-                'http://localhost:8899',
-                'http://127.0.0.1:8899',
-                'http://localhost:3000',
-                'http://127.0.0.1:3000',
-                'http://localhost:5173',
-                'http://127.0.0.1:5173'
-            ]
-        ):
+        
+        # Explicit whitelist of local development and production origins
+        allowed_set = {
+            'http://localhost:8899',
+            'http://127.0.0.1:8899',
+            'http://localhost:3000',
+            'http://127.0.0.1:3000',
+            'http://localhost:5173',
+            'http://127.0.0.1:5173'
+        }
+        
+        # Auto-allow the specific deployment URL if running on Render or Vercel
+        render_url = os.getenv('RENDER_EXTERNAL_URL')
+        if render_url:
+            allowed_set.add(render_url.strip().rstrip('/'))
+        vercel_url = os.getenv('VERCEL_URL')
+        if vercel_url:
+            allowed_set.add(f"https://{vercel_url.strip().rstrip('/')}")
+            
+        # Optional custom domains specified via environment
+        env_origins = [o.strip().rstrip('/') for o in os.getenv('ALLOWED_ORIGINS', '').split(',') if o.strip()]
+        allowed_set.update(env_origins)
+        
+        if origin in allowed_set:
             return origin
+        return None
+
+    def list_directory(self, path):
+        self.send_error(403, "Directory listing forbidden")
         return None
 
     def end_headers(self):
@@ -689,10 +704,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         self._send_json({'success': ok, 'message': msg})
 
     def _handle_pick_tonight(self, body):
-        user = self._get_request_user(body)
+        user = self._get_request_user(body, require_auth=True)
         tmdb_key, gemini_key = self._get_request_keys(user=user, body=body)
         if not user:
-            self._send_json({'success': False, 'movie': None, 'message': 'Username is required'})
+            self._send_json({'success': False, 'movie': None, 'message': 'Authentication required. Please log in.'}, 401)
             return
 
         ai_model, ai_columns, ai_vectorizer, ai_encoders = get_or_train_user_model(user)
