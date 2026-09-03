@@ -20,7 +20,7 @@ from backend.recommender import titleNormalize, load_watched_data
 from backend.feature_engineering import feature_engineering
 from backend.model_train import train_personal_model
 from backend.predictions import predict_movie_score, get_post_watch_recommendations, get_watch_providers, load_ai
-from backend.gemini_client import _fallback_mood_match
+from backend.query_parser import _fallback_mood_match
 
 class TestMBMRecommender(unittest.TestCase):
     def setUp(self):

@@ -171,7 +171,7 @@ class TestModelOfflineEvalAndUpgrades(unittest.TestCase):
 
     def test_05_temporal_year_constraint_enforcement(self):
         """Verify that 'before 2000s' extracts year_max=1999 and strictly excludes post-2000 films."""
-        from backend.gemini_client import _extract_year_constraints
+        from backend.query_parser import _extract_year_constraints
         
         # 1. Test extraction on various natural language phrases
         ymin, ymax = _extract_year_constraints("Something like the odyssey from before 2000s")

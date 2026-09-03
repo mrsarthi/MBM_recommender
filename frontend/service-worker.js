@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mbmr-shell-v5.9';
+const CACHE_NAME = 'mbmr-shell-v6.0';
 const IMAGE_CACHE_NAME = 'mbmr-images-v1';
 
 const STATIC_PRECACHE = [
@@ -46,13 +46,13 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
-  // 1. API routes: Network-Only (do not cache dynamic state in SW)
-  if (url.pathname.startsWith('/api/')) {
+  // 1. API routes: Network-Only (except first-party media proxy)
+  if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/media/')) {
     return;
   }
 
-  // 2. TMDB Images: Stale-While-Revalidate with dedicated image cache
-  if (url.hostname === 'image.tmdb.org') {
+  // 2. Poster Images (First-party proxy or direct TMDB CDN): Stale-While-Revalidate
+  if (url.pathname.startsWith('/api/media/') || url.hostname === 'image.tmdb.org') {
     event.respondWith(
       caches.open(IMAGE_CACHE_NAME).then((cache) => {
         return cache.match(request).then((cachedResponse) => {

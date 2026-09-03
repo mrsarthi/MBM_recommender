@@ -3,9 +3,9 @@
 // ================================================================
 
 const API = window.location.origin;
-const IMG500 = 'https://image.tmdb.org/t/p/w500';
+const IMG500 = `${API}/api/media/poster`;
 const IMG1280 = 'https://image.tmdb.org/t/p/w1280';
-const IMG200 = 'https://image.tmdb.org/t/p/w200';
+const IMG200 = `${API}/api/media/poster`;
 
 let currentPicks = [];
 let currentSpotlight = null;
@@ -163,15 +163,7 @@ async function loadUserDataSets() {
         const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
         if (!username) return;
 
-        // 1. Load Watchlist IDs
-        const wlRes = await fetch(`${API}/api/watchlist?cluster=All&sort=Highest Predicted ★&platform=All Platforms`);
-        const wlData = await wlRes.json();
-        if (wlData && wlData.watchlist) {
-            watchlistIds = new Set(wlData.watchlist.map(m => m.id || m.movie_id));
-            updateWatchlistBadge(wlData.total !== undefined ? wlData.total : watchlistIds.size);
-        }
-
-        // 2. Load Diary IDs & Titles
+        // Load Diary IDs & Titles for card badges
         const diaryRes = await fetch(`${API}/api/diary?rating=All&sort=Newest Log First`);
         const diaryData = await diaryRes.json();
         if (diaryData && diaryData.films) {
@@ -191,9 +183,6 @@ async function loadUserDataSets() {
         console.error("Error loading user datasets:", e);
     }
 }
-function loadWatchlistIds() {
-    return loadUserDataSets();
-}
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
@@ -202,8 +191,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!needsOnboard) {
         await hydrateFromStorage();
         loadStatus();
-        loadWatchlistIds();
         switchView('watchlist');
+        loadUserDataSets();
     } else {
         // Clean empty state behind onboarding modal for fresh visitors
         // Clear ALL content areas so nothing from the host leaks through
@@ -257,7 +246,7 @@ async function loadStatus() {
 
     try {
         const localUser = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
-        const userParam = localUser ? `?user=${encodeURIComponent(localUser)}&_t=${Date.now()}` : `?_t=${Date.now()}`;
+        const userParam = localUser ? `?user=${encodeURIComponent(localUser)}` : '';
         const d = await (await mbmrFetch(`${API}/api/status${userParam}`)).json();
         if (wakeTimer) clearTimeout(wakeTimer);
         const b = document.getElementById('render-wake-banner');
@@ -276,16 +265,6 @@ async function loadStatus() {
     } catch(e) {
         console.warn('Status fetch failed', e);
     }
-}
-
-async function loadWatchlistIds() {
-    try {
-        const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
-        const userParam = username ? `?user=${encodeURIComponent(username)}&_t=${Date.now()}` : `?_t=${Date.now()}`;
-        const d = await (await mbmrFetch(`${API}/api/watchlist${userParam}`)).json();
-        watchlistIds = new Set((d.watchlist || []).map(m => m.id || m.movie_id));
-        updateWatchlistBadge(d.total !== undefined ? d.total : watchlistIds.size);
-    } catch(e) {}
 }
 
 function updateWatchlistBadge(count) {
@@ -498,7 +477,7 @@ function renderGrid(movies, limit = 21) {
     }
     
     const itemsToRender = movies.slice(0, limit);
-    itemsToRender.forEach(m => {
+    itemsToRender.forEach((m, idx) => {
         renderedMoviesMap.set(m.id, m);
         const card = document.createElement('div');
         card.className = 'poster-card';
@@ -529,8 +508,11 @@ function renderGrid(movies, limit = 21) {
         const diaryBtnTitle = isWatched ? `Logged in Diary (${userRating ? userRating + '★' : 'Watched'})` : 'Rate & Log Film';
         const diaryBtnIcon = isWatched ? (userRating ? `★${userRating}` : '✓') : '👁️';
 
+        const directTmdb = posterPath ? `https://image.tmdb.org/t/p/w500/${posterPath.replace(/^\/+/, '')}` : '';
+        const loadMode = idx < 12 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"';
+
         card.innerHTML = `
-            ${poster ? `<img src="${poster}" alt="${m.title}" loading="lazy" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex';"><div class="poster-fallback-ph" style="display:none;width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>` : '<div style="width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>'}
+            ${poster ? `<img src="${poster}" alt="${m.title}" ${loadMode} decoding="async" onerror="if(this.dataset.retry!=='1'&&'${directTmdb}'){this.dataset.retry='1';this.src='${directTmdb}';}else{this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex';}"><div class="poster-fallback-ph" style="display:none;width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>` : '<div style="width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>'}
             <div class="wl-card-actions" onclick="event.stopPropagation()">
                 <button class="${diaryBtnClass}" title="${diaryBtnTitle}" onclick="openLogForMovieFromCardId(${m.id})">
                     ${diaryBtnIcon}
@@ -656,6 +638,7 @@ function renderWatchlistSkeleton(count = 6) {
 const WATCHLIST_PAGE_SIZE = 48;
 let watchlistCurrentPage = 1;
 let currentWatchlistItems = [];
+let _inFlightWatchlist = null;
 
 async function fetchWatchlist(resetPage = true) {
     if (resetPage) watchlistCurrentPage = 1;
@@ -664,7 +647,7 @@ async function fetchWatchlist(resetPage = true) {
     const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
     const cacheKey = `${username}_${currentWatchlistCluster}_${sort}_${stream}`;
     const userParam = username ? `&user=${encodeURIComponent(username)}` : '';
-    const url = `${API}/api/watchlist?cluster=${encodeURIComponent(currentWatchlistCluster)}&sort=${encodeURIComponent(sort)}&platform=${encodeURIComponent(stream)}${userParam}&_t=${Date.now()}`;
+    const url = `${API}/api/watchlist?cluster=${encodeURIComponent(currentWatchlistCluster)}&sort=${encodeURIComponent(sort)}&platform=${encodeURIComponent(stream)}${userParam}`;
     const dock = document.getElementById('dock-label');
 
     // 1. Instant Cache Hit (0ms render)
@@ -672,6 +655,9 @@ async function fetchWatchlist(resetPage = true) {
         const cachedData = watchlistCache.get(cacheKey);
         const cachedItems = cachedData.watchlist || [];
         currentWatchlistItems = cachedItems;
+        if (currentWatchlistCluster === 'All') {
+            watchlistIds = new Set(cachedItems.map(m => m.id || m.movie_id));
+        }
         renderWatchlistGrid(cachedItems);
         updateWatchlistBadge(cachedData.total !== undefined ? cachedData.total : cachedItems.length);
         if (cachedItems.length > 0) {
@@ -687,7 +673,16 @@ async function fetchWatchlist(resetPage = true) {
     }
 
     try {
-        const res = await fetch(url);
+        let res;
+        if (_inFlightWatchlist && _inFlightWatchlist.url === url) {
+            res = await _inFlightWatchlist.promise;
+        } else {
+            const fetchPromise = fetch(url);
+            _inFlightWatchlist = { url, promise: fetchPromise };
+            res = await fetchPromise;
+            _inFlightWatchlist = null;
+        }
+
         if (res.status === 401) {
             const grid = document.getElementById('watchlist-grid');
             if (grid) {
@@ -703,13 +698,16 @@ async function fetchWatchlist(resetPage = true) {
             renderWatchlistPagination(0);
             return;
         }
-        const data = await res.json();
+        const data = await res.clone().json();
         if (data.error === 'Unauthorized') {
             openLoginPrompt();
             return;
         }
         const items = data.watchlist || [];
         currentWatchlistItems = items;
+        if (currentWatchlistCluster === 'All') {
+            watchlistIds = new Set(items.map(m => m.id || m.movie_id));
+        }
         watchlistCache.set(cacheKey, data);
         if (currentWatchlistCluster === 'All' && sort === 'Highest Predicted ★' && stream === 'All Platforms') {
             try { localStorage.setItem('mbmr_cached_watchlist', JSON.stringify(data)); } catch(e) {}
@@ -726,6 +724,7 @@ async function fetchWatchlist(resetPage = true) {
             if (avgEl) avgEl.textContent = `—`;
         }
     } catch(e) { 
+        _inFlightWatchlist = null;
         console.error('Watchlist fetch error', e); 
         if (!watchlistCache.has(cacheKey)) {
             const grid = document.getElementById('watchlist-grid');
@@ -761,7 +760,7 @@ function renderWatchlistGrid(items) {
     const start = (watchlistCurrentPage - 1) * WATCHLIST_PAGE_SIZE;
     const pageItems = items.slice(start, start + WATCHLIST_PAGE_SIZE);
 
-    pageItems.forEach(m => {
+    pageItems.forEach((m, idx) => {
         const card = document.createElement('div');
         card.className = 'poster-card';
         card.onclick = () => openSpotlight(m);
@@ -772,8 +771,11 @@ function renderWatchlistGrid(items) {
         const score = (m.ai_score || 3.8).toFixed(1);
         const runtime = m.runtime ? `${Math.floor(m.runtime/60)}h ${m.runtime%60}m` : '';
 
+        const directTmdbWl = posterPath ? `https://image.tmdb.org/t/p/w500/${posterPath.replace(/^\/+/, '')}` : '';
+        const loadMode = idx < 12 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"';
+
         card.innerHTML = `
-            ${poster ? `<img src="${poster}" alt="${m.title}" loading="lazy" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex';"><div class="poster-fallback-ph" style="display:none;width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>` : '<div style="width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>'}
+            ${poster ? `<img src="${poster}" alt="${m.title}" ${loadMode} decoding="async" onerror="if(this.dataset.retry!=='1'&&'${directTmdbWl}'){this.dataset.retry='1';this.src='${directTmdbWl}';}else{this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex';}"><div class="poster-fallback-ph" style="display:none;width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>` : '<div style="width:100%;height:100%;background:linear-gradient(145deg, #18181b, #09090b);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:28px;">🎬</div>'}
             <div class="wl-card-actions" onclick="event.stopPropagation()">
                 <button class="wl-act-btn" title="Remove from Watchlist" onclick="removeFromWatchlistDirect(${m.movie_id})">✕</button>
             </div>
@@ -944,9 +946,11 @@ async function triggerWatchlistSync() {
         } else {
             if (msg) msg.textContent = d.message || 'Watchlist synced!';
         }
+        watchlistCache.clear();
+        try { localStorage.removeItem('mbmr_cached_watchlist'); } catch(e) {}
         await loadStatus();
         await loadWatchlistIds();
-        await fetchWatchlist();
+        await fetchWatchlist(true);
     } catch(e) {
         if (msg) msg.textContent = 'Sync error.';
         fetchWatchlist();
@@ -979,7 +983,29 @@ function openSpotlight(m, isFromDiary = false) {
         }
     }
 
-    document.getElementById('spotlight-backdrop-img').src = m.backdrop_path ? `${IMG1280}${m.backdrop_path}` : (m.poster_path ? `${IMG500}${m.poster_path}` : '');
+    const bdEl = document.getElementById('spotlight-backdrop-img');
+    const rawPath = (m.backdrop_path || m.poster_path || '').trim();
+    if (rawPath) {
+        const cleanPath = rawPath.replace(/^\/+/, '');
+        const proxySrc = rawPath.startsWith('http') ? rawPath : `${IMG500}/${cleanPath}`;
+        const directTmdbSrc = `https://image.tmdb.org/t/p/w1280/${cleanPath}`;
+        bdEl.style.display = 'block';
+        delete bdEl.dataset.retry;
+        bdEl.onerror = function() {
+            if (this.dataset.retry !== '1') {
+                this.dataset.retry = '1';
+                this.src = directTmdbSrc;
+            } else {
+                this.onerror = null;
+                this.style.display = 'none';
+            }
+        };
+        bdEl.src = proxySrc;
+    } else {
+        bdEl.src = '';
+        bdEl.style.display = 'none';
+    }
+
     document.getElementById('spotlight-tmdb-link').href = `https://www.themoviedb.org/movie/${mId}`;
 
     const wlBtn = document.getElementById('spotlight-watchlist-toggle-btn');
@@ -1143,9 +1169,9 @@ function openSpotlightFromDiary(f) {
         poster_path: f.poster_path || '',
         backdrop_path: f.backdrop_path || f.poster_path || '',
         overview: f.overview || '',
-        vote_average: f.Rating ? parseFloat(f.Rating).toFixed(1) : '7.5',
-        user_rating: f.Rating ? parseFloat(f.Rating).toFixed(1) : null,
-        ai_score: f.Rating ? parseFloat(f.Rating) : 3.8
+        vote_average: (f.vote_average !== undefined && f.vote_average !== null && !isNaN(parseFloat(f.vote_average))) ? parseFloat(f.vote_average).toFixed(1) : 'N/A',
+        user_rating: (f.Rating !== undefined && f.Rating !== null && !isNaN(parseFloat(f.Rating))) ? parseFloat(f.Rating).toFixed(1) : null,
+        ai_score: (f.Rating !== undefined && f.Rating !== null && !isNaN(parseFloat(f.Rating))) ? parseFloat(f.Rating) : 3.8
     };
     openSpotlight(movieObj, true);
 }
@@ -1202,7 +1228,7 @@ function renderJournal(films) {
     } else {
         if (gridEl) {
             gridEl.innerHTML = '';
-            pageFilms.forEach(f => {
+            pageFilms.forEach((f, idx) => {
                 const card = document.createElement('div');
                 card.className = 'poster-card';
                 card.onclick = () => openSpotlightFromDiary(f);
@@ -1211,9 +1237,10 @@ function renderJournal(films) {
                 const year = diaryYear(f);
                 const title = diaryTitle(f);
                 const rating = f.Rating ? parseFloat(f.Rating).toFixed(1) : '';
+                const loadMode = idx < 12 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"';
 
                 card.innerHTML = `
-                    ${poster ? `<img src="${poster}" alt="${title}" loading="lazy" onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 300\\' fill=\\'%23222\\'%3E%3Crect width=\\'100%25\\' height=\\'100%25\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'24\\' fill=\\'%23666\\'%3E🎬%3C/text%3E%3C/svg%3E';">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
+                    ${poster ? `<img src="${poster}" alt="${title}" ${loadMode} decoding="async" onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 300\\' fill=\\'%23222\\'%3E%3Crect width=\\'100%25\\' height=\\'100%25\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' font-size=\\'24\\' fill=\\'%23666\\'%3E🎬%3C/text%3E%3C/svg%3E';">` : '<div style="width:100%;height:100%;background:#222;"></div>'}
                     ${rating ? `<span class="poster-badge journal-badge">★ ${rating}</span>` : ''}
                     <div class="poster-info">
                         <div class="poster-name">${title}</div>
@@ -1550,7 +1577,7 @@ function openSyncModal() { document.getElementById('sync-modal').classList.add('
 function closeSyncModal() { document.getElementById('sync-modal').classList.remove('open'); }
 async function triggerRSSSync() {
     const msg = document.getElementById('sync-status-msg');
-    if (msg) msg.textContent = 'Syncing diary RSS...';
+    if (msg) msg.textContent = 'Checking latest diary entries...';
     
     const localUser = await MBMRStorage.get('letterboxd_username');
     const inputUser = document.getElementById('sync-user-input')?.value.trim();
@@ -1575,19 +1602,18 @@ async function triggerRSSSync() {
         } else {
             if (msg) msg.textContent = d.message || 'Done!';
         }
+        diaryCache.clear();
+        try { localStorage.removeItem('mbmr_cached_diary'); } catch(e) {}
         await loadStatus();
-        await loadWatchlistIds();
-        await fetchWatchlist();
-        fetchDiary();
+        await fetchDiary(true);
     } catch {
         if (msg) msg.textContent = 'Sync failed.';
     }
 }
 async function triggerRetrainAI() {
     const msg = document.getElementById('sync-status-msg');
-    if (msg) msg.textContent = 'Retraining AI Model in RAM...';
+    if (msg) msg.textContent = 'Recalibrating taste model in RAM...';
 
-    // The server needs to know which user's model to rebuild.
     const localUser = await MBMRStorage.get('letterboxd_username');
     const inputUser = document.getElementById('sync-user-input')?.value.trim();
     const username = inputUser || localUser || '';
@@ -1603,7 +1629,10 @@ async function triggerRetrainAI() {
             body: JSON.stringify({ username })
         })).json();
         if (msg) msg.textContent = d.message || 'Done!';
+        watchlistCache.clear();
+        try { localStorage.removeItem('mbmr_cached_watchlist'); } catch(e) {}
         await loadStatus();
+        await fetchWatchlist(true);
     } catch {
         if (msg) msg.textContent = 'Failed.';
     }

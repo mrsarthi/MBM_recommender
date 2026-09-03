@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import pandas as pd
 
-from backend.gemini_client import (
+from backend.query_parser import (
     _extract_year_constraints,
     _extract_reference_entity,
     interpret_query_with_ai

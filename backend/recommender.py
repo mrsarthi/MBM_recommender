@@ -2,12 +2,14 @@ import os
 import re
 import time
 import threading
+from datetime import datetime
 import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from backend.config import TMDB_KEY, TMDB_BASE_URL, PROFILE_PATH, APP_MEMORY_FILE
 from backend.predictions import predict_movie_score, predict_movie_scores_batch, get_watch_providers
+from backend.collaborative import collaborative_engine
 
 class SimpleCachedSession:
     """Thread-safe in-memory cache on top of requests.Session with connection pooling and retries."""
@@ -120,7 +122,10 @@ MOOD_TERMS = {
     'investigation', 'whodunnit', 'slasher', 'haunted', 'ghost', 'paranormal',
     'possession', 'exorcism', 'demon', 'survival', 'revenge', 'martial', 'arts',
     'sports', 'racing', 'prison', 'spy', 'espionage', 'conspiracy', 'multiverse',
-    'dimension', 'parallel', 'loop', 'temporal', 'body', 'found', 'footage', 'psychological'
+    'dimension', 'parallel', 'loop', 'temporal', 'body', 'found', 'footage', 'psychological',
+    'gore', 'gory', 'splatter', 'nudity', 'nude', 'erotic', 'erotica', 'sex', 'sexual',
+    'steamy', 'sensual', 'odyssey', 'quest', 'voyage', 'mythology', 'mythic',
+    'anticipated', 'upcoming', 'coming'
 }
 
 # Cache for TMDB keyword lookups to minimize API overhead (<0.5ms hit)
@@ -141,27 +146,82 @@ def _get_tmdb_keywords(query_str, api_key):
     except Exception:
         return []
 
-# Words carrying no signal either way; ignored when classifying.
+# Words carrying no signal either way; ignored when classifying and matching.
 _FILLER_TERMS = {
     'a', 'an', 'the', 'and', 'or', 'of', 'in', 'on', 'at', 'to', 'for', 'with',
     'about', 'like', 'some', 'something', 'anything', 'movie', 'movies', 'film',
     'films', 'cinema', 'watch', 'watching', 'me', 'my', 'i', 'want', 'need', 'give',
-    'show', 'recommend', 'recommendations', 'good', 'great', 'best',
+    'show', 'recommend', 'recommendations', 'good', 'great', 'best', 'top',
     'is', 'it', 'that', 'this', 'very', 'really', 'kinda', 'kind', 'sort',
+    'not', 'no', 'without', 'never', 'non', 'old', 'new', 'classic', 'classics',
+    'vintage', 'recent', 'modern', 'latest', 'rated', 'acclaimed', 'masterpiece',
+    'most', 'before', 'after', 'prior', 'than', 'but', 'however', 'between', 'during', 'until', 'since'
 }
+
+def _resolve_dynamic_tmdb_keywords(raw_prompt, api_key, limit=12):
+    """
+    Dynamically extracts content tokens from the prompt and queries TMDB's /search/keyword API.
+    Resolves keywords for ANY domain (e.g. 'gore', 'splatter', 'slapstick', 'existential', 'dread', 'zombie', 'paranoia').
+    """
+    if not raw_prompt or not api_key:
+        return []
+    clean = str(raw_prompt or '').lower().strip()
+    tokens = [t for t in re.split(r'[^a-z0-9\-]+', clean) if len(t) > 2 and t not in _FILLER_TERMS]
+    if not tokens:
+        return []
+
+    kw_ids = []
+    # 1. First try 2-word phrase if available (e.g. 'body horror', 'space opera', 'time travel')
+    if len(tokens) >= 2:
+        phrase_ids = _get_tmdb_keywords(' '.join(tokens[:2]), api_key)
+        kw_ids.extend(phrase_ids)
+
+    # 2. Query individual tokens
+    for tok in tokens[:4]:
+        tok_ids = _get_tmdb_keywords(tok, api_key)
+        for kid in tok_ids:
+            if kid not in kw_ids:
+                kw_ids.append(kid)
+
+    return kw_ids[:limit]
+
+def _get_franchise_key(title):
+    """
+    Extracts a canonical root stem for franchise/sequel clustering.
+    E.g. 'Saw II', 'Saw: The Final Chapter', 'Jigsaw' -> 'saw'
+    'The Godfather Part II' -> 'the godfather'
+    """
+    if not title:
+        return ""
+    t = str(title).lower().strip()
+    # Handle known franchise subtitles/spinoffs
+    if any(s in t for s in ['saw', 'jigsaw', 'spiral']):
+        if 'saw' in t or 'jigsaw' in t:
+            return 'saw'
+    # Split by colon, hyphen, 'part'
+    t = re.split(r'[:\-]|\bpart\b|\bchapter\b|\bvol(?:ume|\.)?\b', t)[0].strip()
+    # Remove trailing roman numerals or digits
+    t = re.sub(r'\s+(?:[ivxlcdm]+|\d+)$', '', t).strip()
+    return t
+
 
 
 def looks_like_mood_query(raw):
     """
-    True when the query describes a vibe rather than naming a specific film.
-
-    Used to decide whether TMDB title hits deserve to be pinned to the top of the
-    results as direct matches. Both paths - title search and mood/genre discovery -
-    always run; this only controls ranking.
+    True when the query describes a vibe or meta-intent rather than naming a specific film.
     """
     text = str(raw or '').strip().lower()
     if not text:
         return False
+
+    # Conversational comparison / request / discovery patterns are never literal film titles
+    if re.search(r'\b(?:something\s+like|movies?\s+like|films?\s+like|similar\s+to|in\s+the\s+vein\s+of|recommend\s+me|find\s+me|show\s+me|give\s+me|looking\s+for)\b', text):
+        return True
+    if re.search(r'\b(?:most\s+anticipated|upcoming|coming\s+soon|unreleased|before\s+\d{4}|after\s+\d{4})\b', text):
+        return True
+    if re.search(r'\b(?:gore|nudity|erotic|slasher|splatter)\s*(?:movies?|films?)?\b', text):
+        return True
+
     tokens = [t for t in re.split(r'[^a-z0-9\-]+', text) if t]
     if not tokens:
         return False
@@ -172,15 +232,11 @@ def looks_like_mood_query(raw):
 
     mood_hits = sum(1 for t in meaningful if t in MOOD_TERMS)
 
-    # Every meaningful word is a mood/genre word -> unambiguously a mood query.
     if mood_hits == len(meaningful):
         return True
-    # Several mood words together describe a vibe, not a title.
     if mood_hits >= 2 and len(meaningful) >= 3:
         return True
-    # A long phrase with any mood word in it is a vibe. Kept at 5+ words so real
-    # titles like "A Rainy Day in New York" stay searchable as titles.
-    if len(meaningful) >= 5 and mood_hits >= 1:
+    if len(meaningful) >= 4 and mood_hits >= 1:
         return True
     return False
 
@@ -214,12 +270,15 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     scores candidates using personal AI model, and returns curated recommendations.
     """
     active_tmdb = (tmdb_key or '').strip()
-    if not active_tmdb and username:
+    user_id = None
+    if username:
         try:
             from backend.db import get_user
             u_obj = get_user(username)
-            if u_obj and u_obj.get('tmdb_key'):
-                active_tmdb = str(u_obj['tmdb_key']).strip()
+            if u_obj:
+                user_id = u_obj.get('id')
+                if not active_tmdb and u_obj.get('tmdb_key'):
+                    active_tmdb = str(u_obj['tmdb_key']).strip()
         except Exception:
             pass
     if not active_tmdb:
@@ -236,7 +295,8 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     
     if source == "watchlist" and username:
         from backend.db import get_user_watchlist, get_user_taste_anchors
-        from backend.gemini_client import filter_and_rank_watchlist_with_ai
+        from backend.query_parser import filter_and_rank_watchlist_with_ai
+
         
         wl_movies = get_user_watchlist(username)
         if not wl_movies:
@@ -442,7 +502,7 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                         results.append(rm)
             except Exception: pass
 
-    # 2. Suggested Titles from Gemini (concurrent lookup with high thematic priority & ripple expansion)
+    # 2. Semantic Suggested Titles (concurrent lookup with high thematic priority & ripple expansion)
     suggested_titles = ai_analysis.get('suggested_titles', []) if isinstance(ai_analysis, dict) else []
     seed_movie_ids = []
     if suggested_titles and active_tmdb:
@@ -535,15 +595,74 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     languages = ai_analysis.get('languages', []) if isinstance(ai_analysis, dict) else []
     lang_param = "|".join(languages) if languages else None
 
-    # 4. TMDB Keyword-Constrained Thematic Discovery
+    # 4. TMDB Keyword-Constrained Dynamic Thematic Discovery
     search_query = (ai_analysis.get('search_query') or clean_raw or '').strip()
+    is_upcoming = ai_analysis.get('is_upcoming', False) if isinstance(ai_analysis, dict) else False
     kw_ids = []
-    if search_query and active_tmdb:
-        kw_ids = _get_tmdb_keywords(search_query, active_tmdb)
-        if not kw_ids and clean_raw and clean_raw != search_query:
-            kw_ids = _get_tmdb_keywords(clean_raw, active_tmdb)
+    if active_tmdb:
+        # Dynamically resolve keyword IDs for prompt content tokens (e.g. 'gore', 'slapstick', 'existential')
+        kw_ids = _resolve_dynamic_tmdb_keywords(clean_raw, active_tmdb)
+        if search_query and search_query != clean_raw:
+            extra_query_ids = _resolve_dynamic_tmdb_keywords(search_query, active_tmdb)
+            for eqid in extra_query_ids:
+                if eqid not in kw_ids:
+                    kw_ids.append(eqid)
 
-    # Check thematic_keywords if available
+    # If user explicitly asked for upcoming / unreleased films, query upcoming discover
+    if is_upcoming and active_tmdb:
+        try:
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            # 1. Fetch official TMDB upcoming theatrical list (highest anticipation)
+            try:
+                up_resp = http_session.get(f"{TMDB_BASE_URL}/movie/upcoming", params={'api_key': active_tmdb, 'page': 1}, timeout=5).json()
+                up_matches = up_resp.get('results', []) if isinstance(up_resp, dict) else []
+                for m in up_matches:
+                    if m.get('id') and m.get('id') not in seen_ids:
+                        seen_ids.add(m.get('id'))
+                        m['thematic_match'] = True
+                        m['thematic_weight'] = 1.30
+                        results.append(m)
+            except Exception:
+                pass
+
+            # 2. Discover upcoming movies sorted strictly by popularity
+            disc_params = {
+                'api_key': active_tmdb,
+                'primary_release_date.gte': today_str,
+                'sort_by': 'popularity.desc',
+                'page': 1
+            }
+            if lang_param:
+                disc_params['with_original_language'] = lang_param
+            resp = http_session.get(f"{TMDB_BASE_URL}/discover/movie", params=disc_params, timeout=6).json()
+            matches = resp.get('results', []) if isinstance(resp, dict) else []
+            for m in matches[:25]:
+                if m.get('id') and m.get('id') not in seen_ids:
+                    seen_ids.add(m.get('id'))
+                    m['thematic_match'] = True
+                    m['thematic_weight'] = 1.20
+                    results.append(m)
+        except Exception:
+            pass
+
+    # Check for compound keyword requirements (e.g. gore AND nudity)
+    compound_groups = ai_analysis.get('compound_keyword_groups', []) if isinstance(ai_analysis, dict) else []
+    compound_kw_param = None
+    if compound_groups and active_tmdb:
+        group_id_strings = []
+        for grp in compound_groups:
+            grp_ids = []
+            for term in grp:
+                for kid in _get_tmdb_keywords(term, active_tmdb):
+                    if kid not in grp_ids:
+                        grp_ids.append(kid)
+            if grp_ids:
+                group_id_strings.append("|".join(grp_ids[:4]))
+        if len(group_id_strings) >= 2:
+            # In TMDB discover, comma means AND: (g1_kw1|g1_kw2),(g2_kw1|g2_kw2)
+            compound_kw_param = ",".join(group_id_strings)
+
+    # Also check any explicit thematic_keywords if available
     thematic_kws = ai_analysis.get('thematic_keywords', []) if isinstance(ai_analysis, dict) else []
     for t_kw in thematic_kws[:4]:
         extra_ids = _get_tmdb_keywords(t_kw, active_tmdb)
@@ -551,17 +670,22 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             if eid not in kw_ids:
                 kw_ids.append(eid)
 
-    if kw_ids and active_tmdb and len(results) < 35:
+    desired_genres = ai_analysis.get('genres', []) if isinstance(ai_analysis, dict) else []
+    target_genre_ids = [str(genreDict[name]) for name in desired_genres if name in genreDict]
+
+    if (kw_ids or compound_kw_param) and active_tmdb and len(results) < 35:
         def fetch_kw_discover_page(page):
             try:
                 params = {
                     'api_key': active_tmdb,
-                    'with_keywords': "|".join(kw_ids[:8]),
-                    'vote_count.gte': 20,
-                    'vote_average.gte': 6.0,
+                    'with_keywords': compound_kw_param if compound_kw_param else "|".join(kw_ids[:8]),
+                    'vote_count.gte': 5 if compound_kw_param else 20,
+                    'vote_average.gte': 4.5 if compound_kw_param else 6.0,
                     'sort_by': 'vote_average.desc' if (year_max or languages) else 'popularity.desc',
                     'page': page
                 }
+                if target_genre_ids and not compound_kw_param:
+                    params['with_genres'] = "|".join(str(gid) for gid in target_genre_ids)
                 if lang_param:
                     params['with_original_language'] = lang_param
                 if year_min:
@@ -582,7 +706,9 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                     if m.get('id') and m.get('id') not in seen_ids:
                         seen_ids.add(m.get('id'))
                         m['thematic_match'] = True
-                        m['thematic_weight'] = 1.08
+                        m['thematic_weight'] = 1.25 if compound_kw_param else 1.08
+                        if compound_kw_param:
+                            m['compound_match'] = True
                         results.append(m)
 
     # 5. Search Query / Theme Fallback
@@ -639,7 +765,11 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                             seen_ids.add(m.get('id'))
                             results.append(m)
 
-    # Filter recommendations: enforce unwatched, language, and year bounds
+    # Filter recommendations: enforce unwatched, language, year bounds, and negations
+    excluded_genres = ai_analysis.get('excluded_genres', []) if isinstance(ai_analysis, dict) else []
+    excluded_keywords = ai_analysis.get('excluded_keywords', []) if isinstance(ai_analysis, dict) else []
+    thematic_kws = [k.lower() for k in (ai_analysis.get('thematic_keywords', []) if isinstance(ai_analysis, dict) else [])]
+
     def _passes_filters(m):
         rel_date = str(m.get('release_date') or m.get('year') or '')
         if rel_date and len(rel_date) >= 4 and rel_date[:4].isdigit():
@@ -652,6 +782,27 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             m_lang = (m.get('original_language') or '').lower()
             if m_lang and m_lang not in languages:
                 return False
+
+        # Check excluded genres
+        m_g_ids = m.get('genre_ids', [])
+        m_genres = [idToGenre[g].lower() for g in m_g_ids if g in idToGenre]
+        if isinstance(m.get('genres'), list):
+            m_genres.extend([str(g).lower() for g in m.get('genres', [])])
+        elif isinstance(m.get('genres'), str):
+            m_genres.extend([g.strip().lower() for g in m.get('genres', '').split(',') if g.strip()])
+
+        if excluded_genres:
+            for eg in excluded_genres:
+                if eg.lower() in m_genres:
+                    return False
+
+        if excluded_keywords:
+            m_title = str(m.get('title') or '').lower()
+            m_overview = str(m.get('overview') or '').lower()
+            for ek in excluded_keywords:
+                if ek in m_title or ek in m_overview or any(ek in g for g in m_genres):
+                    return False
+
         return True
 
     unwatched_directs = []
@@ -689,24 +840,111 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
         all_candidates, context=user_context
     ) if ai_model else [3.5] * len(all_candidates)
 
+    # Fetch collaborative filtering predictions if user_id is available
+    cf_predictions = {}
+    if user_id:
+        try:
+            cand_ids = [m.get('id') for m in all_candidates if m.get('id')]
+            cf_predictions = collaborative_engine.get_collaborative_predictions(user_id, cand_ids)
+        except Exception:
+            cf_predictions = {}
+
+    prompt_tokens = [
+        t.lower() for t in re.split(r'[^a-zA-Z0-9\-]+', clean_raw)
+        if len(t) > 2 and t.lower() not in _FILLER_TERMS
+    ]
+
     hated_set = {titleNormalize(h) for h in hated_movies if h}
     finalPicks = []
     for idx, movie in enumerate(all_candidates):
         title_norm = titleNormalize(movie.get('title', ''))
         thematic_weight = movie.get('thematic_weight', 1.0)
         raw_score = raw_scores[idx]
-        
+
+        m_overview = str(movie.get('overview') or '').lower()
+        m_title = str(movie.get('title') or '').lower()
+        m_genres_list = [g.lower() for g in movie.get('genres', [])]
+        combined_text = f"{m_title} {m_overview} {' '.join(m_genres_list)}"
+
+        # Universal Query Relevance Gate:
+        # Check whether candidate has semantic connection to query tokens or thematic keywords
+        if not movie.get('is_direct_match'):
+            has_thematic_kw_match = any(t_kw in combined_text for t_kw in thematic_kws) if thematic_kws else False
+            token_hits = sum(1 for tok in prompt_tokens if tok in combined_text) if prompt_tokens else 0
+            is_thematic_candidate = movie.get('thematic_match') or has_thematic_kw_match or (token_hits > 0)
+
+            if prompt_tokens or thematic_kws:
+                if is_thematic_candidate:
+                    thematic_weight = max(thematic_weight, 1.15 + (0.05 * min(3, token_hits)))
+                else:
+                    # Heavily penalize unrelated blockbuster candidates (e.g. Avengers for 'gore movies')
+                    thematic_weight *= 0.15
+
+        # Compound requirement matching (e.g. gore AND nudity)
+        if compound_groups:
+            if movie.get('compound_match'):
+                thematic_weight = max(thematic_weight, 1.35)
+            else:
+                matched_groups = 0
+                for grp in compound_groups:
+                    if any(term in combined_text for term in grp):
+                        matched_groups += 1
+                if matched_groups >= len(compound_groups):
+                    thematic_weight *= 1.35
+                elif matched_groups == 0:
+                    thematic_weight *= 0.15
+                else:
+                    # Partial match (e.g. gore without nudity or vice-versa)
+                    thematic_weight *= 0.65
+
         # Exact title equality check (fixes hated-movie substring penalty bug)
         if title_norm in hated_set:
             raw_score = max(0.5, raw_score - 2.5)
 
-        score = round(min(5.0, raw_score * thematic_weight), 2)
+        base_score = round(min(5.0, raw_score * thematic_weight), 2)
+
+        # Blend Collaborative Filtering prediction if available
+        m_id = movie.get('id')
+        if m_id in cf_predictions:
+            cf_pred = cf_predictions[m_id]
+            movie['collaborative_score'] = cf_pred
+            score = round(min(5.0, (base_score * 0.75) + (cf_pred * 0.25)), 2)
+        else:
+            score = base_score
+
         movie['ai_score'] = score
         finalPicks.append(movie)
 
     # Sort unwatched recommendation results by AI score while keeping direct search matches prominent
     directs = [m for m in finalPicks if m.get('is_direct_match')]
     others = [m for m in finalPicks if not m.get('is_direct_match')]
-    others.sort(key=lambda x: x.get('ai_score', 0), reverse=True)
+    if is_upcoming:
+        others.sort(key=lambda x: (x.get('ai_score', 0) >= 3.0, x.get('popularity', 0)), reverse=True)
+    else:
+        others.sort(key=lambda x: x.get('ai_score', 0), reverse=True)
 
-    return directs + others
+    # Franchise & Sequel Diversity Gating:
+    # Cap single franchises to max 1 entry in the top 12 (and max 2 overall) to prevent franchise flooding
+    diverse_others = []
+    overflow_sequels = []
+    franchise_counts = {}
+
+    for m in others:
+        fkey = _get_franchise_key(m.get('title', ''))
+        count = franchise_counts.get(fkey, 0) if fkey else 0
+        if len(diverse_others) < 12:
+            if fkey and count >= 1:
+                overflow_sequels.append(m)
+                continue
+        elif fkey and count >= 2:
+            overflow_sequels.append(m)
+            continue
+
+        if fkey:
+            franchise_counts[fkey] = count + 1
+        diverse_others.append(m)
+
+    diverse_others.extend(overflow_sequels)
+    return directs + diverse_others
+
+

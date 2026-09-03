@@ -13,7 +13,7 @@ from backend.db import (
 from backend.in_memory_model import train_user_model_in_memory, get_or_train_user_model
 from backend.jobs import start_onboarding_job, start_watchlist_sync_job, start_diary_sync_job, get_job_status
 from backend.recommender import analyze, titleNormalize
-from backend.config import TMDB_KEY, GEMINI_API_KEY
+from backend.config import TMDB_KEY
 
 import threading
 from backend.api import ThreadedHTTPServer, MBMRRequestHandler, create_session_token
