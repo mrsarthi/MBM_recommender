@@ -12,10 +12,10 @@ from backend.config import TMDB_KEY, TMDB_BASE_URL
 from backend.db import (
     get_or_create_user, get_user, upsert_movies_batch, upsert_user_diary,
     upsert_user_watchlist, get_movie_ids_by_slugs, stable_movie_id,
-    get_user_diary_map, cleanup_database_duplicates, invalidate_user_cache,
+    get_user_diary_map, get_user_watchlist, cleanup_database_duplicates, invalidate_user_cache,
     get_connection, release_connection
 )
-from backend.in_memory_model import train_user_model_in_memory
+from backend.in_memory_model import train_user_model_in_memory, invalidate_user_model
 
 # In-memory job tracking
 _jobs = {}
@@ -361,20 +361,17 @@ def scrape_letterboxd_diary(username, session=None, max_pages=60, on_page=None):
     return entries
 
 
-def scrape_letterboxd_watchlist(username, session=None, max_pages=40):
+def scrape_letterboxd_watchlist(username, session=None, max_pages=40, stop_on_slugs=None):
     """
-    Scrapes the full watchlist.
-
-    Reads only data-item-slug / data-item-name, which appear exclusively on film
-    posters. The previous version fell back to matching every <img alt="...">, which
-    swept up the profile avatar - whose alt text is the member's display name - and
-    imported it as a film (e.g. a phantom entry titled "Parth Sarthi Mishra").
+    Scrapes the Letterboxd watchlist.
+    If stop_on_slugs is provided, stops crawling further pages once an existing known film is encountered.
     """
     s = session or get_scrape_session()
     is_curl = getattr(s, 'is_curl_cffi', False) or ('curl_cffi' in s.__class__.__module__)
 
     entries = []
     seen = set()
+    stop_set = set(str(x).strip().lower() for x in (stop_on_slugs or []))
 
     for page in range(1, max_pages + 1):
         url = "{0}/{1}/watchlist/page/{2}/".format(LB_BASE, username, page)
@@ -393,6 +390,7 @@ def scrape_letterboxd_watchlist(username, session=None, max_pages=40):
         if not slugs:
             break
 
+        encountered_stop = False
         for i, slug in enumerate(slugs):
             slug = slug.strip()
             if not slug or slug in seen:
@@ -404,7 +402,19 @@ def scrape_letterboxd_watchlist(username, session=None, max_pages=40):
                 title = slug.replace('-', ' ').title()
             if not year:
                 year = _year_from_slug(slug)
+
+            # Check if this film is already in the user's database watchlist
+            slug_key = slug.lower()
+            title_key = title.lower()
+            if stop_set and (slug_key in stop_set or title_key in stop_set or title_normalize(title) in stop_set):
+                encountered_stop = True
+                continue
+
             entries.append({'slug': slug, 'title': title, 'year_hint': year})
+
+        if encountered_stop:
+            # Reached previously saved watchlist history, stop crawling
+            break
 
         if "/watchlist/page/{0}/".format(page + 1) not in resp.text:
             break
@@ -685,36 +695,51 @@ def _run_watchlist_sync_pipeline(job_id, username, tmdb_key):
 
         active_tmdb = tmdb_key or (user.get('tmdb_key') if user else '') or TMDB_KEY
 
-        _update_job(job_id, 15, 'watchlist_scrape', 'Reading Letterboxd watchlist for @{0}...'.format(username))
-        session = get_scrape_session()
-        wl_entries = scrape_letterboxd_watchlist(username, session=session)
+        _update_job(job_id, 15, 'watchlist_scrape', 'Checking Letterboxd watchlist for @{0}...'.format(username))
+        
+        # Load existing watchlist to diff incrementally
+        existing_wl = get_user_watchlist(username)
+        existing_slugs = set((m.get('letterboxd_slug') or '').strip().lower() for m in existing_wl if m.get('letterboxd_slug'))
+        for m in existing_wl:
+            t = m.get('title')
+            if t:
+                existing_slugs.add(t.strip().lower())
+                existing_slugs.add(title_normalize(t))
 
-        _update_job(job_id, 45, 'watchlist_scrape',
-                    'Found {0} watchlist films.'.format(len(wl_entries)),
+        session = get_scrape_session()
+        # Incremental sync: check up to 3 pages, stopping as soon as existing entries are encountered
+        wl_entries = scrape_letterboxd_watchlist(username, session=session, max_pages=3, stop_on_slugs=existing_slugs)
+
+        if not wl_entries:
+            _update_job(job_id, 100, 'completed', 'Your watchlist is already up to date (no new films found).',
+                        status='completed', watchlist_count=0)
+            return
+
+        _update_job(job_id, 45, 'resolving',
+                    'Found {0} new watchlist film(s). Matching on TMDB...'.format(len(wl_entries)),
                     watchlist_count=len(wl_entries))
 
+        wl_records, wl_slug_to_id = resolve_entries(
+            wl_entries, active_tmdb, job_id=job_id,
+            base_progress=45, span=40, label='new watchlist films'
+        )
+        if wl_records:
+            upsert_movies_batch(wl_records)
+        today = pd.Timestamp.now().strftime('%Y-%m-%d')
         wl_links = []
-        if wl_entries:
-            wl_records, wl_slug_to_id = resolve_entries(
-                wl_entries, active_tmdb, job_id=job_id,
-                base_progress=45, span=40, label='watchlist films'
-            )
-            if wl_records:
-                upsert_movies_batch(wl_records)
-            today = pd.Timestamp.now().strftime('%Y-%m-%d')
-            for e in wl_entries:
-                mid = wl_slug_to_id.get(e['slug'])
-                if mid:
-                    wl_links.append({'movie_id': mid, 'added_date': today})
-            if wl_links:
-                upsert_user_watchlist(user['id'], wl_links)
+        for e in wl_entries:
+            mid = wl_slug_to_id.get(e['slug'])
+            if mid:
+                wl_links.append({'movie_id': mid, 'added_date': today})
+        if wl_links:
+            upsert_user_watchlist(user['id'], wl_links)
 
         cleanup_database_duplicates(user['id'])
         invalidate_user_cache(user['id'])
 
         _update_job(
             job_id, 100, 'completed',
-            'Done - Synced {0} watchlist films.'.format(len(wl_links)),
+            'Done - Added {0} new film(s) to your watchlist.'.format(len(wl_links)),
             status='completed', watchlist_count=len(wl_links)
         )
     except Exception as e:
@@ -742,10 +767,10 @@ def _run_diary_sync_pipeline(job_id, username, tmdb_key):
 
         new_or_updated = []
         seen_slugs = set()
-        max_sync_pages = 5
+        max_sync_pages = 3
 
         for page in range(1, max_sync_pages + 1):
-            _update_job(job_id, min(10 + page * 5, 35), 'diary_scrape',
+            _update_job(job_id, min(10 + page * 10, 35), 'diary_scrape',
                         'Checking diary page {0}...'.format(page))
             url = "{0}/{1}/films/diary/page/{2}/".format(LB_BASE, username, page)
             try:
@@ -763,6 +788,7 @@ def _run_diary_sync_pipeline(job_id, username, tmdb_key):
                 break
 
             page_new_count = 0
+            page_existing_count = 0
             for row in rows:
                 slug_m = re.search(r'data-item-slug="([^"]+)"', row)
                 if not slug_m:
@@ -796,11 +822,11 @@ def _run_diary_sync_pipeline(job_id, username, tmdb_key):
                 if existing:
                     ex_rating = existing.get('rating')
                     ex_date = existing.get('watched_date') or ''
-                    ex_mid = int(existing.get('movie_id') or 0)
-                    ex_poster = existing.get('poster_path') or ''
-                    if ex_mid < 900000000 and ex_poster:
-                        if (ex_rating == rating or (ex_rating is None and rating is None)) and (ex_date == watched_date or not watched_date):
-                            continue
+                    r_eq = (float(ex_rating) == float(rating) if (ex_rating is not None and rating is not None) else ex_rating == rating)
+                    d_eq = (ex_date == watched_date or not watched_date)
+                    if r_eq and d_eq:
+                        page_existing_count += 1
+                        continue
 
                 page_new_count += 1
                 new_or_updated.append({
@@ -808,7 +834,8 @@ def _run_diary_sync_pipeline(job_id, username, tmdb_key):
                     'rating': rating, 'watched_date': watched_date
                 })
 
-            if page_new_count == 0 and len(rows) > 0:
+            if page_existing_count > 0:
+                # Reached previously synced watch history; stop crawling older pages
                 break
             if len(rows) < 50:
                 break

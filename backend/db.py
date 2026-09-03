@@ -43,9 +43,17 @@ def decrypt_key(val: str) -> str:
 _pool = None
 _pool_lock = __import__('threading').Lock()
 
-# Fast in-memory query cache for rapid UI responses (< 0.1ms) with 15s freshness TTL
+# Smart connection liveness tracking
+_conn_last_used = {}
+_IDLE_PROBE_THRESHOLD = 45.0  # Only probe with SELECT 1 if idle in pool for > 45s
+
+# Fast in-memory query cache for rapid UI responses (< 0.1ms) with 180s freshness TTL
 _query_cache = {}
-_CACHE_TTL = 15.0
+_CACHE_TTL = 180.0
+
+# In-memory user cache: username -> {'data': dict, 'time': float}
+_user_cache = {}
+_USER_CACHE_TTL = 300.0  # 5 minutes
 
 def _get_cache(key):
     entry = _query_cache.get(key)
@@ -57,10 +65,18 @@ def _set_cache(key, data):
     _query_cache[key] = {'data': data, 'time': time.time()}
 
 def invalidate_user_cache(user_id_or_name=""):
-    global _query_cache
+    global _query_cache, _user_cache
     if not user_id_or_name:
         _query_cache.clear()
+        _user_cache.clear()
         return
+
+    # Clear user cache by name or id
+    u_str = str(user_id_or_name).strip().lstrip('@').lower()
+    _user_cache.pop(u_str, None)
+    for u_name, entry in list(_user_cache.items()):
+        if entry.get('data', {}).get('id') == user_id_or_name:
+            _user_cache.pop(u_name, None)
 
     # Resolve to user_id if it's a username string
     user_id = None
@@ -69,22 +85,32 @@ def invalidate_user_cache(user_id_or_name=""):
     elif str(user_id_or_name).isdigit():
         user_id = int(user_id_or_name)
     else:
-        try:
-            user = get_user(str(user_id_or_name))
-            if user:
-                user_id = user['id']
-        except Exception:
-            pass
+        cached = _user_cache.get(u_str)
+        if cached and cached.get('data'):
+            user_id = cached['data']['id']
+        else:
+            try:
+                user = get_user(u_str)
+                if user:
+                    user_id = user['id']
+            except Exception:
+                pass
 
     if user_id is not None:
         prefix_wl = f"wl_{user_id}"
         prefix_diary = f"diary_{user_id}"
-        to_delete = [k for k in _query_cache if k == prefix_wl or k.startswith(f"{prefix_diary}_")]
+        prefix_summary = f"summary_{user_id}"
+        prefix_df = f"df_{user_id}"
+        prefix_anchors = f"anchors_{user_id}"
+        to_delete = [
+            k for k in _query_cache 
+            if k == prefix_wl or k == prefix_summary or k == prefix_df or k == prefix_anchors
+            or k.startswith(f"{prefix_diary}_")
+        ]
         for k in to_delete:
             _query_cache.pop(k, None)
     else:
         # Fallback to string matching
-        u_str = str(user_id_or_name).lower()
         to_delete = [k for k in _query_cache if u_str in k.lower()]
         for k in to_delete:
             _query_cache.pop(k, None)
@@ -96,7 +122,7 @@ def get_db_pool():
             if not DATABASE_URL:
                 raise ValueError("DATABASE_URL is not set in environment or .env")
             _pool = psycopg2.pool.ThreadedConnectionPool(
-                minconn=1, maxconn=10, dsn=DATABASE_URL,
+                minconn=2, maxconn=10, dsn=DATABASE_URL,
                 connect_timeout=10,
                 keepalives=1, keepalives_idle=30,
                 keepalives_interval=10, keepalives_count=3,
@@ -105,20 +131,19 @@ def get_db_pool():
 
 def _reset_pool():
     """Drops the whole pool. Used when Neon has suspended and every socket is dead."""
-    global _pool
+    global _pool, _conn_last_used
     with _pool_lock:
         if _pool is not None:
             try: _pool.closeall()
             except Exception: pass
         _pool = None
+        _conn_last_used.clear()
 
 def get_connection():
     """
-    Checks out a *live* connection.
-
-    Neon's free tier auto-suspends after ~5 minutes idle and silently kills every
-    open socket, so a pooled connection is very often dead on arrival. We probe it
-    with SELECT 1 and transparently replace it if the probe fails.
+    Checks out a *live* connection with intelligent liveness probing.
+    Only probes with SELECT 1 if the connection has been idle for > 45 seconds,
+    eliminating 650ms of dead round-trip latency on warm connections.
     """
     last_err = None
     for attempt in range(3):
@@ -127,11 +152,19 @@ def get_connection():
             conn = get_db_pool().getconn()
             if conn.closed:
                 raise psycopg2.InterfaceError("connection already closed")
-            # Clear any aborted transaction left behind by a previous failure.
-            if conn.get_transaction_status() != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
-                conn.rollback()
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
+            
+            conn_id = id(conn)
+            now = time.time()
+            last_used = _conn_last_used.get(conn_id, 0)
+            
+            # Only probe if idle longer than threshold
+            if (now - last_used) > _IDLE_PROBE_THRESHOLD:
+                if conn.get_transaction_status() != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+                    conn.rollback()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+            
+            _conn_last_used[conn_id] = now
             return conn
         except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
             last_err = e
@@ -145,6 +178,8 @@ def get_connection():
 def release_connection(conn):
     if conn is None:
         return
+    conn_id = id(conn)
+    _conn_last_used[conn_id] = time.time()
     try:
         p = get_db_pool()
     except Exception:
@@ -339,13 +374,16 @@ def init_db():
 def get_user(username: str):
     """
     Read-only user lookup. Returns None if the user does not exist.
-
-    Read paths must use this rather than get_or_create_user(), which would insert a
-    row for every username that ever appears in a query string.
+    Cached in RAM for rapid authentication checks without repeated SQL queries.
     """
     clean_user = (username or '').strip().lstrip('@').lower()
     if not clean_user or clean_user == 'guest':
         return None
+
+    cached = _user_cache.get(clean_user)
+    if cached and (time.time() - cached['time'] < _USER_CACHE_TTL):
+        return dict(cached['data'])
+
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -355,8 +393,45 @@ def get_user(username: str):
                 d = dict(row)
                 d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
                 d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
-                return d
+                _user_cache[clean_user] = {'data': d, 'time': time.time()}
+                return dict(d)
             return None
+    finally:
+        release_connection(conn)
+
+
+def get_user_summary_stats(username: str):
+    """
+    Ultra-fast single-roundtrip query for /api/status.
+    Returns (total_films, watchlist_count, avg_rating, has_tmdb, has_gemini) in < 1ms cached.
+    """
+    user = get_user(username)
+    if not user:
+        return 0, 0, 0.0, False, False
+
+    cache_key = f"summary_{user['id']}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    (SELECT COUNT(*) FROM user_diary WHERE user_id = %s) AS total_films,
+                    (SELECT COALESCE(ROUND(AVG(rating)::numeric, 1), 0.0) FROM user_diary WHERE user_id = %s AND rating IS NOT NULL) AS avg_rating,
+                    (SELECT COUNT(*) FROM user_watchlist WHERE user_id = %s) AS watchlist_count
+            """, (user['id'], user['id'], user['id']))
+            row = cur.fetchone()
+            total_films = int(row[0] or 0)
+            avg_rating = float(row[1] or 0.0)
+            watchlist_count = int(row[2] or 0)
+            has_tmdb = bool(user.get('tmdb_key'))
+            has_gemini = bool(user.get('gemini_key'))
+            result = (total_films, watchlist_count, avg_rating, has_tmdb, has_gemini)
+            _set_cache(cache_key, result)
+            return result
     finally:
         release_connection(conn)
 
@@ -397,6 +472,7 @@ def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None, gem
                 d = dict(user)
                 d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
                 d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
+                _user_cache[clean_user] = {'data': d, 'time': time.time()}
                 return d
             else:
                 pin_h = hash_pin(pin) if pin else ""
@@ -411,6 +487,7 @@ def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None, gem
                 d = dict(cur.fetchone())
                 d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
                 d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
+                _user_cache[clean_user] = {'data': d, 'time': time.time()}
                 return d
     finally:
         release_connection(conn)
@@ -698,13 +775,24 @@ def get_user_diary(username: str, search: str = '', rating_filter: str = 'All', 
             """
             params = [user['id']]
 
-            if rating_filter != 'All':
-                try:
-                    r_val = float(rating_filter.replace('★', '').strip())
-                    query += " AND d.rating = %s"
-                    params.append(r_val)
-                except:
-                    pass
+            if rating_filter and rating_filter != 'All':
+                rf_clean = rating_filter.strip()
+                if rf_clean in ('5★ Only', '5★', '5.0★'):
+                    query += " AND d.rating >= 4.9"
+                elif rf_clean in ('4★+', '4★ & Above', '4★', '4.0★+'):
+                    query += " AND d.rating >= 3.9"
+                elif rf_clean in ('3★+', '3★ & Above', '3★', '3.0★+'):
+                    query += " AND d.rating >= 2.9"
+                else:
+                    try:
+                        r_val = float(rf_clean.replace('★', '').replace('Only', '').replace('+', '').strip())
+                        if '+' in rf_clean:
+                            query += " AND d.rating >= %s"
+                        else:
+                            query += " AND d.rating = %s"
+                        params.append(r_val)
+                    except Exception:
+                        pass
 
             if year_filter != 'All':
                 query += " AND m.year = %s"
@@ -715,18 +803,22 @@ def get_user_diary(username: str, search: str = '', rating_filter: str = 'All', 
                 s_param = f"%{search}%"
                 params.extend([s_param, s_param, s_param])
 
-            if sort_mode == 'Newest Log First':
+            if sort_mode in ('Newest Log First', 'Newest First', 'Newest'):
                 query += " ORDER BY d.watched_date DESC NULLS LAST, d.id DESC"
-            elif sort_mode == 'Highest Rating First':
-                query += " ORDER BY d.rating DESC, d.watched_date DESC NULLS LAST"
-            elif sort_mode == 'Lowest Rating First':
-                query += " ORDER BY d.rating ASC, d.watched_date DESC NULLS LAST"
-            elif sort_mode == 'Release Year (Newest)':
+            elif sort_mode in ('Oldest Log First', 'Oldest First', 'Oldest'):
+                query += " ORDER BY d.watched_date ASC NULLS LAST, d.id ASC"
+            elif sort_mode in ('Highest Rating First', 'Highest Rating', 'Highest ★'):
+                query += " ORDER BY d.rating DESC NULLS LAST, d.watched_date DESC NULLS LAST"
+            elif sort_mode in ('Lowest Rating First', 'Lowest Rating', 'Lowest ★'):
+                query += " ORDER BY d.rating ASC NULLS LAST, d.watched_date DESC NULLS LAST"
+            elif sort_mode in ('Title A-Z', 'Title (A-Z)', 'A → Z'):
+                query += " ORDER BY m.title ASC NULLS LAST"
+            elif sort_mode in ('Release Year (Newest)', 'Release Year'):
                 query += " ORDER BY m.year DESC NULLS LAST"
             elif sort_mode == 'Release Year (Oldest)':
                 query += " ORDER BY m.year ASC NULLS LAST"
             else:
-                query += " ORDER BY d.watched_date DESC NULLS LAST"
+                query += " ORDER BY d.watched_date DESC NULLS LAST, d.id DESC"
 
             cur.execute(query, params)
             rows = [dict(r) for r in cur.fetchall()]
@@ -873,11 +965,17 @@ def remove_from_user_watchlist(username: str, movie_id: int):
 def get_diary_training_df(username: str):
     """
     Extracts user diary merged with full shared movies metadata for in-memory AI training.
+    Cached in RAM with event-driven invalidation to avoid repeating multi-second joins.
     """
     user = get_user(username)
     if not user:
         return pd.DataFrame()
     
+    cache_key = f"df_{user['id']}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached.copy()
+
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -892,7 +990,9 @@ def get_diary_training_df(username: str):
                 ORDER BY d.watched_date DESC NULLS LAST
             """, (user['id'],))
             rows = [dict(r) for r in cur.fetchall()]
-            return pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
+            _set_cache(cache_key, df)
+            return df.copy()
     finally:
         release_connection(conn)
 

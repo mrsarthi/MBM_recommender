@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from backend.config import WATCHLIST_PATH, TMDB_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, get_user_watchlist_path
 from backend.predictions import predict_movie_score, get_watch_providers, load_ai
 from backend.recommender import titleNormalize, load_watched_data, http_session
-from backend.gemini_client import generate_matchmaker_pitch
+from backend.query_parser import generate_matchmaker_pitch
 
 def get_mood_cluster(genres_str, runtime_mins=0):
     g_lower = str(genres_str).lower()
@@ -140,7 +140,10 @@ def add_to_watchlist(movie_data, watchlist_path=None, username=None):
         'added_date': pd.Timestamp.now().strftime('%Y-%m-%d')
     }
 
-    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    if df.empty:
+        df = pd.DataFrame([new_row])
+    else:
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     os.makedirs(os.path.dirname(watchlist_path), exist_ok=True)
     df.to_csv(watchlist_path, index=False)
     return True, f"Added '{title}' to Watchlist!"
@@ -202,7 +205,7 @@ def pick_movie_for_tonight(params, ai_model=None, ai_cols=None, ai_vec=None, ai_
 
     winner = candidates[0]
     
-    # Generate intelligent personalized pitch via Gemini AI
+    # Generate intelligent personalized pitch
     pitch = generate_matchmaker_pitch(
         winner,
         user_taste=user_taste,

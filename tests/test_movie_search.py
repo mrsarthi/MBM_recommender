@@ -12,7 +12,7 @@ if root_dir not in sys.path:
 
 from backend.api import ThreadedHTTPServer, CineAIRequestHandler, create_session_token
 from backend.recommender import analyze, load_watched_data
-from backend.gemini_client import interpret_query_with_ai
+from backend.query_parser import interpret_query_with_ai
 from backend.predictions import load_ai
 from backend.config import MODEL_PATH, COLUMNS_PATH, VECTORIZER_PATH, ENCODERS_PATH
 

@@ -10,7 +10,7 @@ from backend.db import (
     get_or_create_user, upsert_movies_batch, upsert_user_diary,
     get_user_taste_anchors, upsert_user_watchlist
 )
-from backend.gemini_client import (
+from backend.query_parser import (
     interpret_query_with_ai, generate_matchmaker_pitch, _fallback_mood_match
 )
 from backend.recommender import analyze
@@ -115,7 +115,7 @@ class TestGeminiTastePipeline(unittest.TestCase):
         mock_resp.text = json.dumps(mock_response)
         mock_client.models.generate_content.return_value = mock_resp
 
-        with patch('backend.gemini_client._get_genai_client', return_value=mock_client):
+        with patch('backend.query_parser._get_genai_client', return_value=mock_client):
             res = interpret_query_with_ai(
                 "atmospheric rainy neo noir sci-fi",
                 custom_api_key="TEST_KEY",
@@ -220,7 +220,7 @@ class TestGeminiTastePipeline(unittest.TestCase):
         mock_resp.text = '{"pitch": "Since you loved Blade Runner 2049, Gattaca gives you that same smart, elegant dystopian vision in just 106 minutes."}'
         mock_client.models.generate_content.return_value = mock_resp
 
-        with patch('backend.gemini_client._get_genai_client', return_value=mock_client):
+        with patch('backend.query_parser._get_genai_client', return_value=mock_client):
             pitch = generate_matchmaker_pitch(
                 sample_winner,
                 user_taste=anchors,
@@ -239,7 +239,7 @@ class TestGeminiTastePipeline(unittest.TestCase):
             'genres': ['Science Fiction', 'Thriller'], 'ai_score': 4.5,
             'clusters': ['Mind-Bending', 'Quick Watch']
         }
-        with patch('backend.gemini_client.GEMINI_API_KEY', None):
+        with patch('backend.query_parser.GEMINI_API_KEY', None):
             pitch = generate_matchmaker_pitch(
                 sample_winner,
                 user_taste=None,

@@ -6,7 +6,7 @@ import unittest
 import time
 from backend.predictions import predict_movie_score, predict_movie_scores_batch
 from backend.in_memory_model import train_user_model_in_memory, get_or_train_user_model
-from backend.gemini_client import interpret_query_with_ai, CASCADE_MODELS, _fallback_mood_match
+from backend.query_parser import interpret_query_with_ai, CASCADE_MODELS, _fallback_mood_match
 from backend.db import get_or_create_user, upsert_user_diary, upsert_movies_batch, get_user_watchlist
 import pandas as pd
 
@@ -90,7 +90,7 @@ class TestFastWatchlistAndGeminiFallback(unittest.TestCase):
             mock_resp_success
         ]
 
-        with patch('backend.gemini_client._get_genai_client', return_value=mock_client):
+        with patch('backend.query_parser._get_genai_client', return_value=mock_client):
             res = interpret_query_with_ai("scary ghost house", custom_api_key="DUMMY_KEY")
 
             self.assertEqual(mock_client.models.generate_content.call_count, 2)

@@ -12,56 +12,26 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import pandas as pd
 
-from backend.config import BASE_DIR, TMDB_KEY, GEMINI_API_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME, SESSION_SECRET
+from backend.config import BASE_DIR, TMDB_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME, SESSION_SECRET
 from backend.rate_limiter import rate_limiter
 from backend.logger import logger, log_security_event, log_auth_attempt, log_rate_limit_blocked
-
-SESSION_EXPIRY_SECONDS = 30 * 86400  # 30 days
-
-def create_session_token(username: str) -> str:
-    clean_user = (username or '').strip().lstrip('@').lower()
-    if not clean_user:
-        return ""
-    ts = int(time.time())
-    payload = f"{clean_user}:{ts}"
-    sig = hmac.new(SESSION_SECRET.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256).hexdigest()
-    return f"{payload}:{sig}"
-
-def verify_session_token(token: str) -> tuple[bool, str]:
-    if not token or not isinstance(token, str):
-        return False, ""
-    parts = token.strip().split(':')
-    if len(parts) != 3:
-        return False, ""
-    username, ts_str, sig = parts
-    try:
-        ts = int(ts_str)
-    except ValueError:
-        return False, ""
-    
-    # Check expiration (30 days validity, 5 mins future clock skew allowance)
-    if time.time() - ts > SESSION_EXPIRY_SECONDS or ts > time.time() + 300:
-        return False, ""
-    
-    payload = f"{username}:{ts}"
-    expected_sig = hmac.new(SESSION_SECRET.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected_sig):
-        return False, ""
-    return True, username
+from backend.auth import create_session_token, verify_session_token, SESSION_EXPIRY_SECONDS
+from backend.media import media_gateway
 from backend.db import (
     init_db, get_user, get_or_create_user, verify_user_pin, get_user_diary,
     get_user_watchlist, add_to_user_watchlist, remove_from_user_watchlist,
-    upsert_movies_batch, upsert_user_diary, get_user_taste_anchors
+    upsert_movies_batch, upsert_user_diary, get_user_taste_anchors, get_user_summary_stats
 )
 from backend.in_memory_model import get_or_train_user_model, invalidate_user_model, train_user_model_in_memory
 from backend.jobs import (
     start_onboarding_job, start_diary_sync_job, start_watchlist_sync_job,
     start_csv_import_job, get_job_status, repair_user_unhydrated_movies
 )
-from backend.predictions import predict_movie_score, predict_movie_scores_batch, get_post_watch_recommendations, get_watch_providers
-from backend.gemini_client import interpret_query_with_ai, generate_matchmaker_pitch
+from backend.query_parser import interpret_query as interpret_query_with_ai, generate_matchmaker_pitch
+
 from backend.recommender import analyze, titleNormalize, http_session
 from backend.watchlist import get_mood_cluster, pick_movie_for_tonight
+from backend.predictions import predict_movie_scores_batch, get_watch_providers, get_post_watch_recommendations, load_ai
 
 # Initialize Neon DB schema on startup
 try:
@@ -77,13 +47,16 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         frontend_dir = os.path.join(BASE_DIR, 'frontend')
         super().__init__(*args, directory=frontend_dir, **kwargs)
 
-    def _get_request_user(self, query=None, body=None, require_auth=False):
+    def _get_request_user(self, query=None, body=None, require_auth=False, **kwargs):
         """
         Authenticates caller identity using HMAC-signed session tokens.
         1. Authorization: Bearer <session_token>
         2. X-Session-Token: <session_token>
-        3. If require_auth is False (e.g. unauthenticated status/search), allows query/body user parameter.
+        3. Fallback to requested user if user has no PIN lock or matches configured LETTERBOXD_USERNAME
         """
+        if 'require_auth' in kwargs:
+            require_auth = kwargs['require_auth']
+
         auth_header = self.headers.get('Authorization', '')
         token = ''
         if auth_header.startswith('Bearer '):
@@ -96,13 +69,46 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             if valid and user:
                 return user
 
+        # Check for explicit empty username in passed dictionaries
+        explicit_empty = False
+        req_u = ''
+        for src in (body, query):
+            if isinstance(src, dict):
+                if 'username' in src or 'user' in src:
+                    val = src.get('username') if 'username' in src else src.get('user')
+                    if isinstance(val, list):
+                        val = val[0] if val else ''
+                    val_str = str(val or '').strip()
+                    if not val_str:
+                        explicit_empty = True
+                    else:
+                        req_u = val_str
+                        break
+
+        # Extract requested user identity from header or sources
+        requested_user = (
+            self.headers.get('X-Letterboxd-User', '') or
+            req_u or
+            ''
+        ).strip().lstrip('@').lower()
+
+        env_user = (LETTERBOXD_USERNAME or '').strip().lstrip('@').lower()
+        if not requested_user and not explicit_empty and env_user:
+            requested_user = env_user
+
+        if requested_user:
+            if env_user and requested_user == env_user:
+                return requested_user
+            try:
+                user_obj = get_user(requested_user)
+                if user_obj and not user_obj.get('pin_hash'):
+                    return requested_user
+            except Exception:
+                pass
+
         if not require_auth:
-            if query and isinstance(query, dict):
-                u = query.get('user', [''])[0]
-                if u: return str(u).strip().lstrip('@').lower()
-            if body and isinstance(body, dict):
-                u = body.get('user') or body.get('username')
-                if u: return str(u).strip().lstrip('@').lower()
+            return requested_user
+
         return ''
 
     def _get_request_keys(self, user=None, body=None, query=None, allow_env_fallback=True):
@@ -141,8 +147,9 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if allow_env_fallback:
             if not tmdb and TMDB_KEY and TMDB_KEY != 'YOUR_TMDB_API_KEY_HERE':
                 tmdb = TMDB_KEY
-            if not gemini and GEMINI_API_KEY and GEMINI_API_KEY != 'YOUR_GEMINI_API_KEY_HERE':
-                gemini = GEMINI_API_KEY
+            env_gemini = os.getenv('GEMINI_API_KEY')
+            if not gemini and env_gemini and env_gemini != 'YOUR_GEMINI_API_KEY_HERE':
+                gemini = env_gemini
 
         return tmdb, gemini
 
@@ -273,10 +280,30 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._handle_search_tmdb(query)
         elif path == '/api/onboarding/status':
             self._handle_onboarding_status(query)
+        elif path.startswith('/api/media/poster/'):
+            self._handle_media_poster(path[len('/api/media/poster/'):])
         elif path.startswith('/api/'):
             self._send_json({'error': 'Endpoint not found'}, 404)
         else:
             super().do_GET()
+
+    def _handle_media_poster(self, filename):
+        img_bytes, content_type = media_gateway.fetch_poster(filename)
+        if img_bytes and content_type:
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(img_bytes)))
+            self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            allowed_origin = self._get_allowed_origin()
+            if allowed_origin:
+                self.send_header('Access-Control-Allow-Origin', allowed_origin)
+            super().end_headers()
+            self.wfile.write(img_bytes)
+            return
+
+        self._send_json({'error': 'Poster image not found'}, 404)
+
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -453,21 +480,14 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
         if user:
             try:
-                _, total_films, avg_rating = get_user_diary(user)
-                wl = get_user_watchlist(user)
-                watchlist_count = len(wl)
-                
-                # Fetch keys status
-                user_obj = get_user(user)
-                if user_obj:
-                    has_tmdb = bool(user_obj.get('tmdb_key'))
-                    has_gemini = bool(user_obj.get('gemini_key'))
+                total_films, watchlist_count, avg_rating, has_tmdb, has_gemini = get_user_summary_stats(user)
             except Exception as e:
                 print(f"Status query error: {e}")
 
-        # Check if user has an in-memory trained model
-        ai_model, _, _, _ = get_or_train_user_model(user) if user else (None, None, None, None)
-        model_status = "Ready" if ai_model else "Model not calibrated"
+        # Check if user model is ready in RAM without triggering a blocking train loop
+        from backend.in_memory_model import _user_models
+        clean_u = (user or '').strip().lstrip('@').lower()
+        model_status = "Ready" if clean_u in _user_models else "Model not calibrated"
 
         self._send_json({
             'username': user or 'guest',
@@ -992,8 +1012,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if not user:
             self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
             return
-        tmdb_key, gemini_key = self._get_request_keys(user=user, body=body)
-        job_id = start_onboarding_job(user, tmdb_key=tmdb_key, gemini_key=gemini_key)
+        tmdb_key, _ = self._get_request_keys(user=user, body=body)
+        job_id = start_diary_sync_job(user, tmdb_key=tmdb_key)
         self._send_json({'success': True, 'job_id': job_id, 'message': 'Diary sync started in background'})
 
     def _handle_retrain(self, body=None):

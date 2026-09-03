@@ -150,7 +150,7 @@ MBM_recommender/
 │   ├── api.py                  # Threaded HTTP server, CORS, & REST endpoints
 │   ├── config.py               # Environment configuration & API key validation
 │   ├── feature_engineering.py  # TF-IDF, director/cast encoding, and taste feature extraction
-│   ├── gemini_client.py        # Gemini AI prompt interpreter & query expander
+│   ├── query_parser.py         # Deterministic NLP query parser & semantic vibe expander
 │   ├── model_train.py          # Random Forest personal regression model training
 │   ├── predictions.py          # Real-time star rating predictions & post-watch ripples
 │   ├── recommender.py          # Multi-vector movie discovery & direct title search
