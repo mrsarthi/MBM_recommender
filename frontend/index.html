@@ -335,7 +335,14 @@
                             <option value="Comfort">Cozy & Comfort</option>
                         </select>
                     </div>
-                    <button class="roll-match-btn" onclick="executePickTonight()">🎲 Roll AI Match from Watchlist</button>
+                    <button id="roll-match-btn" class="roll-match-btn" onclick="executePickTonight()">🎲 Roll AI Match from Watchlist</button>
+                </div>
+
+                <!-- Matchmaker Loading State -->
+                <div id="pick-loading-spinner" style="display:none;flex-direction:column;align-items:center;justify-content:center;padding:28px 16px;gap:12px;text-align:center;">
+                    <div class="spinner" style="width:28px;height:28px;border-width:3px;"></div>
+                    <div style="font-size:13px;font-weight:600;color:var(--text1);">Scanning watchlist & scoring mood affinity...</div>
+                    <div style="font-size:11px;color:var(--text3);">Tailoring personalized pitch with your AI taste model</div>
                 </div>
 
                 <!-- Result Card -->
@@ -491,7 +498,7 @@
                             <input id="login-pin" type="password" maxlength="6" class="onboard-input" placeholder="Enter your 4-6 digit PIN">
                         </div>
                         <div id="login-error-msg" style="color:#ef4444;font-size:12px;margin-bottom:10px;display:none;"></div>
-                        <button class="sp-btn primary" style="width:100%;" onclick="submitLoginProfile()">Log In to Profile ✦</button>
+                        <button id="login-submit-btn" class="sp-btn primary" style="width:100%;" onclick="submitLoginProfile()">Log In to Profile ✦</button>
                     </div>
                 </div>
                 

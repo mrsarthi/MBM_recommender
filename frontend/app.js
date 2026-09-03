@@ -884,6 +884,16 @@ async function executePickTonight() {
     const duration = document.getElementById('pick-duration').value;
     const mood = document.getElementById('pick-mood').value;
     const resArea = document.getElementById('pick-result-area');
+    const loaderEl = document.getElementById('pick-loading-spinner');
+    const rollBtn = document.getElementById('roll-match-btn') || document.querySelector('.roll-match-btn');
+    const originalText = rollBtn ? rollBtn.innerHTML : '🎲 Roll AI Match from Watchlist';
+
+    if (resArea) resArea.style.display = 'none';
+    if (loaderEl) loaderEl.style.display = 'flex';
+    if (rollBtn) {
+        rollBtn.disabled = true;
+        rollBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:8px;"></span> Scoring Watchlist...';
+    }
     
     try {
         const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
@@ -911,6 +921,12 @@ async function executePickTonight() {
         resArea.style.display = 'flex';
     } catch(e) {
         alert('Error picking movie.');
+    } finally {
+        if (loaderEl) loaderEl.style.display = 'none';
+        if (rollBtn) {
+            rollBtn.disabled = false;
+            rollBtn.innerHTML = originalText;
+        }
     }
 }
 
@@ -1516,6 +1532,12 @@ async function submitLogMovie() {
         ? selectedLogMovie.genres.join(', ') 
         : (selectedLogMovie.genres || '');
     const yearVal = (selectedLogMovie.release_date || selectedLogMovie.year || '').split('-')[0].replace('.0', '');
+    const logBtn = document.querySelector('#log-movie-modal .modal-submit');
+    const origLogText = logBtn ? logBtn.innerHTML : 'Confirm & Log to Diary';
+    if (logBtn) {
+        logBtn.disabled = true;
+        logBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:6px;"></span> Saving to Diary...';
+    }
 
     try {
         const res = await fetch(`${API}/api/log_movie`, { 
@@ -1560,6 +1582,11 @@ async function submitLogMovie() {
     } catch(err) { 
         console.error('Error logging movie:', err);
         showToast('Failed to log film. Please try again.', '⚠️'); 
+    } finally {
+        if (logBtn) {
+            logBtn.disabled = false;
+            logBtn.innerHTML = origLogText;
+        }
     }
 }
 
@@ -1775,6 +1802,13 @@ async function submitLoginProfile() {
         return;
     }
 
+    const loginBtn = document.getElementById('login-submit-btn') || document.querySelector('#onboard-form-login .sp-btn.primary');
+    const originalLoginText = loginBtn ? loginBtn.innerHTML : 'Log In to Profile ✦';
+    if (loginBtn) {
+        loginBtn.disabled = true;
+        loginBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:6px;"></span> Unlocking Profile...';
+    }
+
     try {
         const res = await fetch(`${API}/api/auth/login`, {
             method: 'POST',
@@ -1817,6 +1851,11 @@ async function submitLoginProfile() {
         }
     } catch(e) {
         if (errEl) { errEl.textContent = 'Connection error. Please try again.'; errEl.style.display = 'block'; }
+    } finally {
+        if (loginBtn) {
+            loginBtn.disabled = false;
+            loginBtn.innerHTML = originalLoginText;
+        }
     }
 }
 
