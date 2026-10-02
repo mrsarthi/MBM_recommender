@@ -75,7 +75,7 @@ def _prune_jobs():
         _jobs.pop(j, None)
 
 
-def start_onboarding_job(username, pin=None, tmdb_key=None, gemini_key=None, skip_scrape=False, favorites=None):
+def start_onboarding_job(username, pin=None, tmdb_key=None, skip_scrape=False, favorites=None):
     clean_user = (username or '').strip().lstrip('@').lower()
     job_id = str(uuid.uuid4())
 
@@ -96,7 +96,7 @@ def start_onboarding_job(username, pin=None, tmdb_key=None, gemini_key=None, ski
 
     t = threading.Thread(
         target=_run_onboarding_pipeline,
-        args=(job_id, clean_user, pin, tmdb_key, gemini_key, skip_scrape, favorites),
+        args=(job_id, clean_user, pin, tmdb_key, skip_scrape, favorites),
         daemon=True
     )
     t.start()
@@ -456,6 +456,7 @@ def _tmdb_details(movie_id, tmdb_k):
         'director': director,
         'cast': cast,
         'keywords': kw,
+        'original_language': r.get('original_language') or '',
         'runtime': r.get('runtime') or 0,
         'vote_average': round(float(r.get('vote_average') or 7.0), 1),
         'poster_path': r.get('poster_path') or '',
@@ -787,7 +788,6 @@ def _run_diary_sync_pipeline(job_id, username, tmdb_key):
             if not rows:
                 break
 
-            page_new_count = 0
             page_existing_count = 0
             for row in rows:
                 slug_m = re.search(r'data-item-slug="([^"]+)"', row)
@@ -828,7 +828,6 @@ def _run_diary_sync_pipeline(job_id, username, tmdb_key):
                         page_existing_count += 1
                         continue
 
-                page_new_count += 1
                 new_or_updated.append({
                     'slug': slug, 'title': title, 'year_hint': year,
                     'rating': rating, 'watched_date': watched_date
@@ -935,9 +934,9 @@ def _run_diary_sync_pipeline(job_id, username, tmdb_key):
                     status='failed', error=str(e))
 
 
-def _run_onboarding_pipeline(job_id, username, pin, tmdb_key, gemini_key, skip_scrape=False, favorites=None):
+def _run_onboarding_pipeline(job_id, username, pin, tmdb_key, skip_scrape=False, favorites=None):
     try:
-        user = get_or_create_user(username, pin=pin, tmdb_key=tmdb_key, gemini_key=gemini_key)
+        user = get_or_create_user(username, pin=pin, tmdb_key=tmdb_key)
         if not user:
             _update_job(job_id, 100, 'error', 'Failed to create user record',
                         status='failed', error='User creation failed')

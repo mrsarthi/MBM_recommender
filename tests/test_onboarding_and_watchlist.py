@@ -5,16 +5,13 @@ import json
 import urllib.request
 import threading
 import time
-import shutil
 
 # Ensure workspace root is in sys.path
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-from backend.api import ThreadedHTTPServer, CineAIRequestHandler, create_session_token
-from backend.config import get_user_profile_path, get_user_watchlist_path
-from backend.watchlist import add_to_watchlist, remove_from_watchlist, load_watchlist
+from backend.api import ThreadedHTTPServer, MBMRRequestHandler, create_session_token
 
 TEST_PORT = 9987
 BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
@@ -22,7 +19,7 @@ BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
 class TestOnboardingAndWatchlistIsolation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadedHTTPServer(('127.0.0.1', TEST_PORT), CineAIRequestHandler)
+        cls.server = ThreadedHTTPServer(('127.0.0.1', TEST_PORT), MBMRRequestHandler)
         cls.thread = threading.Thread(target=cls.server.serve_forever)
         cls.thread.daemon = True
         cls.thread.start()
@@ -37,16 +34,6 @@ class TestOnboardingAndWatchlistIsolation(unittest.TestCase):
             cls.server.server_close()
         except Exception:
             pass
-        # Clean up test profiles
-        for u in ['test_user_alpha', 'test_user_beta']:
-            p_prof = get_user_profile_path(u)
-            p_wl = get_user_watchlist_path(u)
-            if os.path.exists(p_prof):
-                try: os.remove(p_prof)
-                except Exception: pass
-            if os.path.exists(p_wl):
-                try: os.remove(p_wl)
-                except Exception: pass
 
     def test_01_new_user_starts_with_zero_watchlist(self):
         """New visitor/user should have 0 watchlist count and 0 films."""

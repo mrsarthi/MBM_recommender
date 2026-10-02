@@ -1,25 +1,20 @@
 import os
 import sys
 import unittest
-import json
 from unittest.mock import patch, Mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.db import (
-    get_or_create_user, upsert_movies_batch, upsert_user_diary,
-    get_user_taste_anchors, upsert_user_watchlist
+    get_or_create_user, upsert_movies_batch, upsert_user_diary, upsert_user_watchlist
 )
-from backend.query_parser import (
-    interpret_query_with_ai, generate_matchmaker_pitch, _fallback_mood_match
-)
+from backend.query_parser import generate_matchmaker_pitch
 from backend.recommender import analyze
-from backend.watchlist import pick_movie_for_tonight
 from backend.in_memory_model import train_user_model_in_memory
 
 import time
 
-class TestGeminiTastePipeline(unittest.TestCase):
+class TestTastePipeline(unittest.TestCase):
 
     def setUp(self):
         self.username = f"test_taste_cinephile_{int(time.time() * 1000)}"
@@ -69,66 +64,6 @@ class TestGeminiTastePipeline(unittest.TestCase):
             {'movie_id': 80005, 'rating': 1.5, 'watched_date': '2026-08-14'}
         ])
 
-    def test_01_get_user_taste_anchors(self):
-        """Test extraction of top directors, 5★ favorites, and preferred genres."""
-        anchors = get_user_taste_anchors(self.username)
-        self.assertIsNotNone(anchors)
-        self.assertIn('top_directors', anchors)
-        self.assertIn('favorite_movies', anchors)
-        self.assertIn('top_genres', anchors)
-        self.assertIn('preferred_decades', anchors)
-
-        # Denis Villeneuve and David Fincher should be top directors
-        self.assertTrue(any('Denis Villeneuve' in d for d in anchors['top_directors']))
-        self.assertTrue(any('David Fincher' in d for d in anchors['top_directors']))
-        
-        # 5-star favorites should include Blade Runner 2049 and Se7en
-        self.assertIn('Blade Runner 2049', anchors['favorite_movies'])
-        self.assertIn('Se7en', anchors['favorite_movies'])
-        
-        # Sci-Fi / Thriller / Mystery should be top genres
-        self.assertTrue(any(g in anchors['top_genres'] for g in ['Science Fiction', 'Mystery', 'Thriller', 'Drama']))
-
-    def test_02_interpret_query_with_taste_context_mock(self):
-        """Test Gemini query parsing with taste context and structured JSON."""
-        anchors = get_user_taste_anchors(self.username)
-        
-        mock_response = {
-            "genres": ["Science Fiction", "Thriller"],
-            "search_query": "atmospheric neo noir",
-            "suggested_titles": [
-                {
-                    "title": "Gattaca",
-                    "year": "1997",
-                    "vibe_pitch": "Matches your affinity for smart, atmospheric 90s dystopian sci-fi."
-                },
-                {
-                    "title": "Dark City",
-                    "year": "1998",
-                    "vibe_pitch": "Dark neo-noir aesthetic that aligns with your love for mystery and Se7en."
-                }
-            ]
-        }
-
-        mock_client = Mock()
-        mock_resp = Mock()
-        mock_resp.text = json.dumps(mock_response)
-        mock_client.models.generate_content.return_value = mock_resp
-
-        with patch('backend.query_parser._get_genai_client', return_value=mock_client):
-            res = interpret_query_with_ai(
-                "atmospheric rainy neo noir sci-fi",
-                custom_api_key="TEST_KEY",
-                taste_context=anchors
-            )
-
-            self.assertIn('genres', res)
-            self.assertEqual(res['genres'], ["Science Fiction", "Thriller"])
-            self.assertEqual(len(res['suggested_titles']), 2)
-            self.assertEqual(res['suggested_titles'][0]['title'], "Gattaca")
-            self.assertEqual(res['suggested_titles'][0]['year'], "1997")
-            self.assertTrue("dystopian" in res['suggested_titles'][0]['vibe_pitch'])
-
     def test_03_recommender_deduplication_and_ranking(self):
         """Test that already-watched movies are filtered out and remaining candidates are ranked by AI score."""
         ai_model, ai_cols, ai_vec, ai_enc = train_user_model_in_memory(self.username)
@@ -138,37 +73,31 @@ class TestGeminiTastePipeline(unittest.TestCase):
         watched_ids = {80001, 80002, 80003, 80004, 80005}
 
         ai_analysis = {
-            'genres': ['Science Fiction', 'Thriller'],
-            'search_query': 'neo noir',
-            'suggested_titles': [
-                {'title': 'Blade Runner 2049', 'year': '2017', 'vibe_pitch': 'Already watched'},
-                {'title': 'Gattaca', 'year': '1997', 'vibe_pitch': 'Atmospheric sci-fi mystery'},
-                {'title': 'Dark City', 'year': '1998', 'vibe_pitch': 'Noir thriller with great mood'}
-            ]
+            'genres': [],
+            'search_query': '',
+            'reference_entity': 'Blade Runner 2049'
         }
 
-        # Mock TMDB movie lookups
+        # Mock TMDB: the reference title resolves to an already-watched film,
+        # and its recommendations supply the unseen candidates.
         def mock_http_get(url, params=None, timeout=None):
             resp = Mock()
             resp.status_code = 200
             q = (params or {}).get('query', '')
-            if 'Gattaca' in q:
+            if url.endswith('/movie/80001/recommendations'):
                 resp.json.return_value = {
-                    'results': [{
-                        'id': 782, 'title': 'Gattaca', 'genre_ids': [878, 53, 18],
-                        'release_date': '1997-10-24', 'vote_average': 7.6,
-                        'overview': 'In a future society, genetically engineered individuals rule.',
-                        'director': 'Andrew Niccol'
-                    }]
-                }
-            elif 'Dark City' in q:
-                resp.json.return_value = {
-                    'results': [{
-                        'id': 2666, 'title': 'Dark City', 'genre_ids': [878, 9648],
-                        'release_date': '1998-02-27', 'vote_average': 7.3,
-                        'overview': 'A man struggles with memories in a world that never sees sunlight.',
-                        'director': 'Alex Proyas'
-                    }]
+                    'results': [
+                        {
+                            'id': 782, 'title': 'Gattaca', 'genre_ids': [878, 53, 18],
+                            'release_date': '1997-10-24', 'vote_average': 7.6,
+                            'overview': 'In a future society, genetically engineered individuals rule.'
+                        },
+                        {
+                            'id': 2666, 'title': 'Dark City', 'genre_ids': [878, 9648],
+                            'release_date': '1998-02-27', 'vote_average': 7.3,
+                            'overview': 'A man struggles with memories in a world that never sees sunlight.'
+                        }
+                    ]
                 }
             elif 'Blade Runner' in q:
                 resp.json.return_value = {
@@ -197,58 +126,20 @@ class TestGeminiTastePipeline(unittest.TestCase):
             # Gattaca and Dark City should be present
             self.assertTrue(782 in pick_ids or 2666 in pick_ids)
 
-            # Check that vibe_pitch was preserved
-            for p in picks:
-                if p.get('id') == 782:
-                    self.assertEqual(p.get('vibe_pitch'), 'Atmospheric sci-fi mystery')
-
             # Verify picks are sorted descending by predicted ai_score
             for i in range(len(picks) - 1):
                 self.assertGreaterEqual(picks[i].get('ai_score', 0), picks[i+1].get('ai_score', 0))
 
-    def test_04_generate_matchmaker_pitch(self):
-        """Test AI pitch generation for watchlist matchmaker."""
-        anchors = get_user_taste_anchors(self.username)
-        sample_winner = {
-            'movie_id': 782, 'title': 'Gattaca', 'year': '1997', 'runtime': 106,
-            'genres': ['Science Fiction', 'Thriller'], 'ai_score': 4.5,
-            'overview': 'A genetically imperfect man dreams of traveling to the stars.'
-        }
-
-        mock_client = Mock()
-        mock_resp = Mock()
-        mock_resp.text = '{"pitch": "Since you loved Blade Runner 2049, Gattaca gives you that same smart, elegant dystopian vision in just 106 minutes."}'
-        mock_client.models.generate_content.return_value = mock_resp
-
-        with patch('backend.query_parser._get_genai_client', return_value=mock_client):
-            pitch = generate_matchmaker_pitch(
-                sample_winner,
-                user_taste=anchors,
-                duration_pref='< 2 hours',
-                mood_pref='Mind-Bending',
-                custom_api_key='TEST_KEY'
-            )
-
-            self.assertIn("Blade Runner 2049", pitch)
-            self.assertIn("Gattaca", pitch)
-
-    def test_05_matchmaker_fallback_without_key(self):
-        """Test fallback pitch when API key is not provided."""
+    def test_05_matchmaker_pitch(self):
+        """Test the matchmaker pitch includes the predicted score and runtime."""
         sample_winner = {
             'movie_id': 782, 'title': 'Gattaca', 'year': '1997', 'runtime': 106,
             'genres': ['Science Fiction', 'Thriller'], 'ai_score': 4.5,
             'clusters': ['Mind-Bending', 'Quick Watch']
         }
-        with patch('backend.query_parser.GEMINI_API_KEY', None):
-            pitch = generate_matchmaker_pitch(
-                sample_winner,
-                user_taste=None,
-                duration_pref='< 2 hours',
-                mood_pref='Mind-Bending',
-                custom_api_key=None
-            )
-            self.assertIn("affinity score", pitch)
-            self.assertIn("106 min", pitch)
+        pitch = generate_matchmaker_pitch(sample_winner)
+        self.assertIn("affinity score", pitch)
+        self.assertIn("106 min", pitch)
 
     def test_06_watchlist_search_differentiation(self):
         """Test that distinct queries on watchlist return distinct, relevant rankings."""
@@ -293,7 +184,7 @@ class TestGeminiTastePipeline(unittest.TestCase):
         # Query 1: Some weird films
         picks_weird = analyze(
             set(), set(), set(),
-            {'genres': ['Fantasy', 'Science Fiction'], 'search_query': 'surreal weird', 'suggested_titles': []},
+            {'genres': ['Fantasy', 'Science Fiction'], 'search_query': 'surreal weird'},
             ai_model, ai_cols, ai_vec, ai_enc,
             source='watchlist', username=self.username, raw_prompt='Some weird films'
         )
@@ -304,7 +195,7 @@ class TestGeminiTastePipeline(unittest.TestCase):
         # Query 2: Some weird horror films
         picks_weird_horror = analyze(
             set(), set(), set(),
-            {'genres': ['Horror'], 'search_query': 'weird surreal horror', 'suggested_titles': []},
+            {'genres': ['Horror'], 'search_query': 'weird surreal horror'},
             ai_model, ai_cols, ai_vec, ai_enc,
             source='watchlist', username=self.username, raw_prompt='Some weird horror films'
         )
@@ -314,7 +205,7 @@ class TestGeminiTastePipeline(unittest.TestCase):
         # Query 3: horror
         picks_horror = analyze(
             set(), set(), set(),
-            {'genres': ['Horror'], 'search_query': 'horror', 'suggested_titles': []},
+            {'genres': ['Horror'], 'search_query': 'horror'},
             ai_model, ai_cols, ai_vec, ai_enc,
             source='watchlist', username=self.username, raw_prompt='horror'
         )

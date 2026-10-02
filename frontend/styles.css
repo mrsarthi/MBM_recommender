@@ -1719,3 +1719,468 @@ body {
     font-weight: 800;
 }
 
+
+
+/* ================================================================
+   CINEMA LOUNGE OVERLAY
+   ================================================================ */
+.cinema-lounge-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 9999;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(20px);
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    box-sizing: border-box;
+}
+
+.lounge-hud {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.lounge-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text2);
+}
+
+.lounge-pulse-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+    animation: loungePulse 2s infinite;
+}
+
+@keyframes loungePulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(34, 197, 94, 0.6); }
+    50% { opacity: 0.5; box-shadow: 0 0 4px rgba(34, 197, 94, 0.3); }
+}
+
+.lounge-countdown {
+    font-size: 11px;
+    color: var(--text3);
+    font-weight: 600;
+}
+
+/* Amber while the backend boots, green once it answers */
+.cinema-lounge-overlay:not(.server-online) .lounge-pulse-dot {
+    background: #f59e0b;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+}
+
+.cinema-lounge-overlay.server-online .lounge-status-text {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.lounge-exit-btn {
+    margin-left: 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text2);
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.lounge-exit-btn:hover {
+    color: var(--text);
+    border-color: var(--text3);
+}
+
+.lounge-tabs {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.lounge-tab {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    color: var(--text2);
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.lounge-tab:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text1);
+}
+
+.lounge-tab.active {
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 700;
+}
+
+.arcade-game-container {
+    flex: 1;
+    overflow-y: auto;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 12px;
+    padding: 20px;
+}
+
+.lounge-game-header {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.lounge-game-header h3 {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text1);
+    margin: 0 0 8px;
+}
+
+.lounge-score {
+    font-size: 13px;
+    color: var(--text2);
+}
+
+.lounge-restart-btn {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 8px 24px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.lounge-restart-btn:hover {
+    transform: scale(1.05);
+}
+
+/* ================================================================
+   TRIVIA GAMES
+   ================================================================ */
+.trivia-content {
+    max-width: 500px;
+    margin: 0 auto;
+}
+
+.trivia-question {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text1);
+    text-align: center;
+    margin-bottom: 20px;
+    padding: 0 12px;
+}
+
+.trivia-options {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.trivia-opt-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    color: var(--text1);
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.trivia-opt-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.trivia-opt-btn.selected {
+    background: rgba(255, 255, 255, 0.15);
+    border-color: var(--accent);
+}
+
+.trivia-opt-btn.correct {
+    background: rgba(34, 197, 94, 0.2);
+    border-color: #22c55e;
+    color: #4ade80;
+    animation: correctPulse 0.6s ease;
+}
+
+@keyframes correctPulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+    100% { transform: scale(1); }
+}
+
+.trivia-opt-btn.incorrect {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: #ef4444;
+    color: #f87171;
+}
+
+.trivia-loading {
+    text-align: center;
+    padding: 40px;
+    color: var(--text2);
+    font-size: 14px;
+}
+
+.trivia-fallback-msg {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.trivia-complete {
+    text-align: center;
+    padding: 30px;
+}
+
+.trivia-final-score {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 20px;
+}
+
+/* ================================================================
+   TITLE SCRAMBLE
+   ================================================================ */
+.scramble-clue {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.scramble-clue-row {
+    font-size: 13px;
+    color: var(--text2);
+    margin-bottom: 4px;
+}
+
+.scramble-letters {
+    font-family: 'Courier New', monospace;
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text1);
+    text-align: center;
+    letter-spacing: 4px;
+    margin-bottom: 24px;
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+}
+
+.scramble-input-wrap {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    max-width: 500px;
+    margin: 0 auto;
+}
+
+.scramble-answer-input {
+    flex: 1;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    color: var(--text1);
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    outline: none;
+}
+
+.scramble-submit {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.scramble-correct, .scramble-incorrect {
+    text-align: center;
+    font-size: 18px;
+    font-weight: 700;
+    padding: 20px;
+}
+
+.scramble-correct {
+    color: #22c55e;
+}
+
+.scramble-incorrect {
+    color: #ef4444;
+}
+
+/* ================================================================
+   SPOTLIGHT DIRECTOR & CAST BADGES
+   ================================================================ */
+.sp-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text2);
+    margin-bottom: 8px;
+}
+
+.sp-meta-row strong {
+    color: var(--text1);
+    font-weight: 600;
+}
+
+.sp-cast-badge, .sp-director-badge {
+    display: inline-flex;
+    align-items: center;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--text2);
+    margin-right: 4px;
+    margin-bottom: 4px;
+}
+
+.sp-cast-badge {
+    color: var(--text1);
+}
+
+/* ================================================================
+   MATCHMAKER REROLL BUTTON & DICE ANIMATION
+   ================================================================ */
+#pick-reroll-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text1);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#pick-reroll-btn:hover {
+    background: var(--accent);
+    color: var(--bg);
+    transform: translateX(2px);
+}
+
+#pick-reroll-btn.spinning .spinner {
+    animation: diceRoll 0.6s linear infinite;
+}
+
+@keyframes diceRoll {
+    0% { transform: rotate(0deg) scale(1.2); }
+    25% { transform: rotate(90deg) scale(1.3); }
+    50% { transform: rotate(180deg) scale(1.2); }
+    75% { transform: rotate(270deg) scale(1.3); }
+    100% { transform: rotate(360deg) scale(1.2); }
+}
+
+/* ================================================================
+   RUNTIME FILTERS
+   ================================================================ */
+#quick-filter-btn.vibe.active {
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 700;
+}
+
+#wl-runtime-select.wl-select {
+    min-width: 140px;
+}
+
+/* ================================================================
+   LOUNGE READY TOAST
+   ================================================================ */
+.lounge-ready-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: linear-gradient(90deg, #22c55e, #06b6d4);
+    color: var(--bg);
+    padding: 12px 24px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 700;
+    z-index: 10000;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    max-width: calc(100vw - 32px);
+    box-shadow: 0 8px 32px rgba(34, 197, 94, 0.4);
+    animation: readyToastSlide 0.4s ease;
+}
+
+.lounge-toast-btn {
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 14px;
+    cursor: pointer;
+}
+
+.lounge-toast-btn.primary {
+    background: var(--bg);
+    color: var(--accent);
+    border-color: transparent;
+}
+
+@keyframes readyToastSlide {
+    from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ================================================================
+   MOBILE RESPONSIVE
+   ================================================================ */
+@media (max-width: 768px) {
+    .cinema-lounge-overlay {
+        padding: 8px;
+    }
+
+    .lounge-hud {
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .lounge-tabs {
+        flex-wrap: wrap;
+    }
+
+    .scramble-letters {
+        font-size: 18px;
+        letter-spacing: 2px;
+    }
+
+    .scramble-input-wrap {
+        flex-direction: column;
+    }
+}

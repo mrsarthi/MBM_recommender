@@ -1,18 +1,13 @@
 import os
-import sys
 import re
 import json
 import threading
-import time
 import urllib.parse
-import hmac
-import hashlib
-from collections import defaultdict
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import pandas as pd
 
-from backend.config import BASE_DIR, TMDB_KEY, TMDB_BASE_URL, TMDB_IMAGE_BASE, LETTERBOXD_USERNAME, SESSION_SECRET
+from backend.config import BASE_DIR, TMDB_KEY, TMDB_BASE_URL, LETTERBOXD_USERNAME, SESSION_SECRET
 from backend.rate_limiter import rate_limiter
 from backend.logger import logger, log_security_event, log_auth_attempt, log_rate_limit_blocked
 from backend.auth import create_session_token, verify_session_token, SESSION_EXPIRY_SECONDS
@@ -20,18 +15,18 @@ from backend.media import media_gateway
 from backend.db import (
     init_db, get_user, get_or_create_user, verify_user_pin, get_user_diary,
     get_user_watchlist, add_to_user_watchlist, remove_from_user_watchlist,
-    upsert_movies_batch, upsert_user_diary, get_user_taste_anchors, get_user_summary_stats
+    upsert_movies_batch, upsert_user_diary, get_user_summary_stats
 )
 from backend.in_memory_model import get_or_train_user_model, invalidate_user_model, train_user_model_in_memory
 from backend.jobs import (
     start_onboarding_job, start_diary_sync_job, start_watchlist_sync_job,
     start_csv_import_job, get_job_status, repair_user_unhydrated_movies
 )
-from backend.query_parser import interpret_query as interpret_query_with_ai, generate_matchmaker_pitch
+from backend.query_parser import interpret_query, generate_matchmaker_pitch
 
 from backend.recommender import analyze, titleNormalize, http_session
-from backend.watchlist import get_mood_cluster, pick_movie_for_tonight
-from backend.predictions import predict_movie_scores_batch, get_watch_providers, get_post_watch_recommendations, load_ai
+from backend.watchlist import get_mood_cluster
+from backend.predictions import predict_movie_scores_batch, get_watch_providers, get_post_watch_recommendations
 
 # Initialize Neon DB schema on startup
 try:
@@ -110,47 +105,33 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
         return ''
 
-    def _get_request_keys(self, user=None, body=None, query=None, allow_env_fallback=True):
+    def _get_tmdb_key(self, user=None, body=None, query=None, allow_env_fallback=True):
         """
-        Retrieves TMDB and Gemini keys in strict priority:
-        1. Explicit HTTP Headers (X-TMDB-Key, X-Gemini-Key)
-        2. Body / Query parameter (tmdb_key, gemini_key)
-        3. Database user profile (users.tmdb_key, users.gemini_key)
-        4. Environment variables (config.TMDB_KEY, config.GEMINI_API_KEY) - only if allow_env_fallback is True
+        Retrieves the TMDB key in strict priority:
+        1. Explicit HTTP Header (X-TMDB-Key)
+        2. Body / Query parameter (tmdb_key)
+        3. Database user profile (users.tmdb_key)
+        4. Environment variable (config.TMDB_KEY) - only if allow_env_fallback is True
         """
         tmdb = (
-            self.headers.get('X-TMDB-Key') or 
+            self.headers.get('X-TMDB-Key') or
             (body.get('tmdb_key') if isinstance(body, dict) else '') or
             (query.get('tmdb_key', [''])[0] if isinstance(query, dict) else '') or
             ''
         ).strip()
-        
-        gemini = (
-            self.headers.get('X-Gemini-Key') or 
-            (body.get('gemini_key') if isinstance(body, dict) else '') or
-            (query.get('gemini_key', [''])[0] if isinstance(query, dict) else '') or
-            ''
-        ).strip()
 
-        if user and (not tmdb or not gemini):
+        if user and not tmdb:
             try:
                 user_obj = get_user(user)
-                if user_obj:
-                    if not tmdb and user_obj.get('tmdb_key'):
-                        tmdb = str(user_obj['tmdb_key']).strip()
-                    if not gemini and user_obj.get('gemini_key'):
-                        gemini = str(user_obj['gemini_key']).strip()
+                if user_obj and user_obj.get('tmdb_key'):
+                    tmdb = str(user_obj['tmdb_key']).strip()
             except Exception:
                 pass
 
-        if allow_env_fallback:
-            if not tmdb and TMDB_KEY and TMDB_KEY != 'YOUR_TMDB_API_KEY_HERE':
-                tmdb = TMDB_KEY
-            env_gemini = os.getenv('GEMINI_API_KEY')
-            if not gemini and env_gemini and env_gemini != 'YOUR_GEMINI_API_KEY_HERE':
-                gemini = env_gemini
+        if allow_env_fallback and not tmdb and TMDB_KEY and TMDB_KEY != 'YOUR_TMDB_API_KEY_HERE':
+            tmdb = TMDB_KEY
 
-        return tmdb, gemini
+        return tmdb
 
     def _get_allowed_origin(self):
         origin = self.headers.get('Origin')
@@ -216,7 +197,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', allowed_origin)
             self.send_header('Access-Control-Allow-Credentials', 'true')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token, X-TMDB-Key, X-Gemini-Key, X-Letterboxd-User, X-User-Pin')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token, X-TMDB-Key, X-Letterboxd-User, X-User-Pin')
         self.end_headers()
 
     def _send_json(self, data, status=200):
@@ -295,6 +276,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._handle_search_tmdb(query)
         elif path == '/api/onboarding/status':
             self._handle_onboarding_status(query)
+        elif path == '/api/movie_credits':
+            self._handle_movie_credits(query)
         elif path.startswith('/api/media/poster/'):
             self._handle_media_poster(path[len('/api/media/poster/'):])
         elif path.startswith('/api/'):
@@ -378,7 +361,6 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
         pin = str(body.get('pin') or '').strip()
         tmdb = (body.get('tmdb_key') or self.headers.get('X-TMDB-Key') or '').strip()
-        gemini = (body.get('gemini_key') or self.headers.get('X-Gemini-Key') or '').strip()
 
         # Verify PIN before updating keys
         ok, msg, user_obj = verify_user_pin(user, pin)
@@ -386,12 +368,11 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             self._send_json({'success': False, 'message': 'Invalid PIN. Keys cannot be updated.'}, 401)
             return
 
-        u = get_or_create_user(user, pin=pin or None, tmdb_key=tmdb or None, gemini_key=gemini or None)
+        u = get_or_create_user(user, pin=pin or None, tmdb_key=tmdb or None)
         if u:
             self._send_json({'success': True, 'message': 'API keys updated successfully', 'user': {
                 'username': u['username'],
-                'has_tmdb': bool(u.get('tmdb_key')),
-                'has_gemini': bool(u.get('gemini_key'))
+                'has_tmdb': bool(u.get('tmdb_key'))
             }})
         else:
             self._send_json({'success': False, 'message': 'Failed to update user keys'}, 500)
@@ -431,8 +412,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 'session_token': session_token,
                 'user': {
                     'username': user['username'],
-                    'has_tmdb': bool(user.get('tmdb_key')),
-                    'has_gemini': bool(user.get('gemini_key'))
+                    'has_tmdb': bool(user.get('tmdb_key'))
                 }
             })
         else:
@@ -442,7 +422,6 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         username = (body.get('username') or '').strip().lstrip('@').lower()
         pin = str(body.get('pin') or '').strip()
         tmdb = (body.get('tmdb_key') or self.headers.get('X-TMDB-Key') or '').strip()
-        gemini = (body.get('gemini_key') or self.headers.get('X-Gemini-Key') or '').strip()
         skip_scrape = bool(body.get('skip_scrape', False))
         favorites = body.get('favorites', [])
 
@@ -464,7 +443,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             return
 
         job_id = start_onboarding_job(
-            username, pin=pin, tmdb_key=tmdb, gemini_key=gemini,
+            username, pin=pin, tmdb_key=tmdb,
             skip_scrape=skip_scrape, favorites=favorites
         )
         self._send_json({
@@ -491,11 +470,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         avg_rating = 0.0
         watchlist_count = 0
         has_tmdb = False
-        has_gemini = False
 
         if user:
             try:
-                total_films, watchlist_count, avg_rating, has_tmdb, has_gemini = get_user_summary_stats(user)
+                total_films, watchlist_count, avg_rating, has_tmdb = get_user_summary_stats(user)
             except Exception as e:
                 print(f"Status query error: {e}")
 
@@ -511,7 +489,6 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             'avg_rating': avg_rating,
             'model_status': model_status,
             'has_tmdb': has_tmdb,
-            'has_gemini': has_gemini,
             'version': '5.0.0 (Neon DB Edition)'
         })
 
@@ -556,7 +533,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 for r in records
             )
             if has_unhydrated:
-                tmdb_key, _ = self._get_request_keys(user=user, query=query)
+                tmdb_key = self._get_tmdb_key(user=user, query=query)
                 if tmdb_key:
                     threading.Thread(target=repair_user_unhydrated_movies, args=(user, tmdb_key), daemon=True).start()
 
@@ -569,8 +546,6 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         user = self._get_request_user(query, require_auth=True)
         if not user:
             self._send_json({'error': 'Unauthorized', 'message': 'Authentication required', 'genres': [], 'badges': []}, 401)
-            return
-            self._send_json({'radar': {}, 'badges': []})
             return
 
         try:
@@ -606,7 +581,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         cluster_filter = query.get('cluster', ['All'])[0]
         sort_mode = query.get('sort', ['Highest Predicted ★'])[0]
         platform_filter = query.get('platform', ['All Platforms'])[0]
-        tmdb_key, _ = self._get_request_keys(user=user, query=query)
+        runtime_max = _parse_positive_int(query.get('runtime_max', [''])[0])
+        tmdb_key = self._get_tmdb_key(user=user, query=query)
 
         ai_model, ai_columns, ai_vectorizer, ai_encoders = get_or_train_user_model(user)
 
@@ -654,6 +630,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
             # Filter by Cluster
             if cluster_filter != 'All':
                 items = [m for m in items if cluster_filter in m.get('clusters', [])]
+
+            # Filter by max runtime (films with unknown runtime are kept)
+            if runtime_max:
+                items = [m for m in items if not m['runtime'] or m['runtime'] <= runtime_max]
 
             # Filter by Streaming Platform
             if platform_filter != 'All Platforms' and items:
@@ -704,9 +684,27 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         ok, msg = remove_from_user_watchlist(user, movie_id)
         self._send_json({'success': ok, 'message': msg})
 
+    def _handle_movie_credits(self, query):
+        movie_id = query.get('id', [''])[0]
+        if not movie_id:
+            self._send_json({'error': 'movie_id (id) is required'}, 400)
+            return
+        try:
+            user = self._get_request_user(query)
+            tmdb_key = self._get_tmdb_key(user=user, query=query, allow_env_fallback=True)
+            if not tmdb_key:
+                self._send_json({'error': 'TMDB API key is required'}, 403)
+                return
+            director = _get_movie_director(movie_id, tmdb_key)
+            cast = _get_movie_cast(movie_id, tmdb_key, limit=5)
+            self._send_json({'movie_id': int(movie_id), 'director': director, 'cast': cast})
+        except Exception as e:
+            print(f"[ERROR] _handle_movie_credits: {e}")
+            self._send_json({'error': 'Internal server error', 'director': '', 'cast': []}, 500)
+
     def _handle_pick_tonight(self, body):
         user = self._get_request_user(body, require_auth=True)
-        tmdb_key, gemini_key = self._get_request_keys(user=user, body=body)
+        tmdb_key = self._get_tmdb_key(user=user, body=body)
         if not user:
             self._send_json({'success': False, 'movie': None, 'message': 'Authentication required. Please log in.'}, 401)
             return
@@ -749,8 +747,9 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         duration = body.get('duration', 'Any')
         mood = body.get('mood', 'Any')
         platform = body.get('platform', 'All Platforms')
+        excluded_ids = set(body.get('excluded_ids', []))
 
-        candidates = items.copy()
+        candidates = [m for m in items if m['movie_id'] not in excluded_ids]
         if not candidates:
             self._send_json({'success': False, 'movie': None, 'message': 'Watchlist is empty. Add a few films first!'})
             return
@@ -778,16 +777,10 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         candidates.sort(key=lambda x: (x.get('ai_score', 0), x.get('vote_average', 0)), reverse=True)
         winner = candidates[0]
         
-        # Ground matchmaker pitch with user taste anchors and Gemini
-        taste_anchors = get_user_taste_anchors(user) if user else None
-        winner['pitch'] = generate_matchmaker_pitch(
-            winner,
-            user_taste=taste_anchors,
-            duration_pref=duration,
-            mood_pref=mood,
-            custom_api_key=gemini_key
-        )
+        winner['pitch'] = generate_matchmaker_pitch(winner)
         winner['providers'] = get_watch_providers(winner['movie_id'], tmdb_key=tmdb_key)
+        winner['director'] = _get_movie_director(winner['movie_id'], tmdb_key) if tmdb_key else ''
+        winner['cast'] = _get_movie_cast(winner['movie_id'], tmdb_key) if tmdb_key else []
         self._send_json({'success': True, 'movie': winner, 'message': 'Match found!'})
 
     def _handle_recommend(self, body):
@@ -803,29 +796,32 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         context = body.get('context', 'Alone')
         streaming = body.get('streaming', 'All Platforms')
         source = body.get('source', 'all')
-        tmdb_key, gemini_key = self._get_request_keys(user=user, body=body)
+        tmdb_key = self._get_tmdb_key(user=user, body=body)
 
         # Load user watched titles & IDs from Neon DB
         watched_titles = []
         watched_ids = []
-        taste_context = None
         if user:
             try:
                 diary_rows, _, _ = get_user_diary(user)
                 watched_titles = [titleNormalize(r['title']) for r in diary_rows if r.get('title')]
                 watched_ids = [r['movie_id'] for r in diary_rows if r.get('movie_id')]
-                taste_context = get_user_taste_anchors(user)
             except Exception:
                 pass
 
         ai_model, ai_columns, ai_vectorizer, ai_encoders = get_or_train_user_model(user) if user else (None, None, None, None)
-        ai_analysis = interpret_query_with_ai(prompt, custom_api_key=gemini_key, taste_context=taste_context)
+        ai_analysis = interpret_query(prompt)
+
+        # UI "< 90 min" toggle applies only when the prompt itself sets no runtime limit
+        body_runtime_max = _parse_positive_int(body.get('runtime_max'))
+        if body_runtime_max and not ai_analysis.get('runtime_max'):
+            ai_analysis['runtime_max'] = body_runtime_max
 
         picks = analyze(
             watched_titles, watched_ids, [],
             ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders,
             user_context=context, streaming_filter=streaming, raw_prompt=prompt,
-            source=source, username=user, tmdb_key=tmdb_key, gemini_key=gemini_key
+            source=source, username=user, tmdb_key=tmdb_key
         )
 
         # Sanitize picks against nan
@@ -846,6 +842,8 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
                 'is_watched': bool(p.get('is_watched', False)),
                 'vibe_pitch': str(p.get('vibe_pitch') or '')
             })
+            clean_picks[-1]['director'] = p.get('director', '') or ''
+            clean_picks[-1]['cast'] = p.get('cast', []) or []
 
         self._send_json({
             'prompt': prompt,
@@ -857,7 +855,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
     def _handle_search_tmdb(self, query):
         q = query.get('q', [''])[0].strip()
         user = self._get_request_user(query)
-        tmdb_key, _ = self._get_request_keys(user=user, query=query, allow_env_fallback=True)
+        tmdb_key = self._get_tmdb_key(user=user, query=query, allow_env_fallback=True)
         if not q or not tmdb_key:
             self._send_json({'results': [], 'error': 'TMDB API key is required'})
             return
@@ -949,7 +947,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
 
         try:
             user = self._get_request_user(query)
-            tmdb_key, _ = self._get_request_keys(user=user, query=query)
+            tmdb_key = self._get_tmdb_key(user=user, query=query)
             watched_ids = []
             watched_titles = []
             if user:
@@ -1021,7 +1019,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if not user:
             self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
             return
-        tmdb_key, _ = self._get_request_keys(user=user, body=body)
+        tmdb_key = self._get_tmdb_key(user=user, body=body)
         job_id = start_watchlist_sync_job(user, tmdb_key=tmdb_key)
         self._send_json({'success': True, 'job_id': job_id, 'message': 'Watchlist sync started in background'})
 
@@ -1030,7 +1028,7 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         if not user:
             self._send_json({'success': False, 'message': 'Authentication required. Please log in.'}, 401)
             return
-        tmdb_key, _ = self._get_request_keys(user=user, body=body)
+        tmdb_key = self._get_tmdb_key(user=user, body=body)
         job_id = start_diary_sync_job(user, tmdb_key=tmdb_key)
         self._send_json({'success': True, 'job_id': job_id, 'message': 'Diary sync started in background'})
 
@@ -1043,7 +1041,40 @@ class MBMRRequestHandler(SimpleHTTPRequestHandler):
         train_user_model_in_memory(user)
         self._send_json({'success': True, 'message': f'Personal AI Model recalibrated for @{user} in RAM!'})
 
-CineAIRequestHandler = MBMRRequestHandler
+def _parse_positive_int(value):
+    """Returns value as a positive int, or None if missing/invalid."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _get_movie_director(movie_id, tmdb_key):
+    """Fetches the director name for a given movie_id from TMDB."""
+    try:
+        resp = http_session.get(f"{TMDB_BASE_URL}/movie/{movie_id}/credits", params={'api_key': tmdb_key}, timeout=6).json()
+        if isinstance(resp, dict):
+            crew = resp.get('crew', [])
+            for c in crew:
+                if c.get('job') == 'Director':
+                    return str(c.get('name', ''))
+    except Exception:
+        pass
+    return ''
+
+
+def _get_movie_cast(movie_id, tmdb_key, limit=5):
+    """Fetches the top N cast members for a given movie_id from TMDB."""
+    try:
+        resp = http_session.get(f"{TMDB_BASE_URL}/movie/{movie_id}/credits", params={'api_key': tmdb_key}, timeout=6).json()
+        if isinstance(resp, dict):
+            cast = resp.get('cast', [])[:limit]
+            return [str(c.get('name', '')) for c in cast if c.get('name')]
+    except Exception:
+        pass
+    return []
+
 
 def start_server(host='0.0.0.0', port=8899):
     server = ThreadedHTTPServer((host, port), MBMRRequestHandler)

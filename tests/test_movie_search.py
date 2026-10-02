@@ -10,11 +10,8 @@ root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-from backend.api import ThreadedHTTPServer, CineAIRequestHandler, create_session_token
-from backend.recommender import analyze, load_watched_data
-from backend.query_parser import interpret_query_with_ai
-from backend.predictions import load_ai
-from backend.config import MODEL_PATH, COLUMNS_PATH, VECTORIZER_PATH, ENCODERS_PATH
+from backend.api import ThreadedHTTPServer, MBMRRequestHandler, create_session_token
+from backend.recommender import analyze
 
 TEST_PORT = 9983
 BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
@@ -22,15 +19,13 @@ BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
 class TestMovieTitleSearch(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadedHTTPServer(('127.0.0.1', TEST_PORT), CineAIRequestHandler)
+        cls.server = ThreadedHTTPServer(('127.0.0.1', TEST_PORT), MBMRRequestHandler)
         cls.server_thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.server_thread.start()
         time.sleep(0.5)
 
-        cls.watched_titles, cls.watched_ids, cls.hated = load_watched_data()
-        cls.ai_model, cls.ai_cols, cls.ai_vec, cls.ai_enc = load_ai(
-            MODEL_PATH, COLUMNS_PATH, VECTORIZER_PATH, ENCODERS_PATH
-        )
+        cls.hated = set()
+        cls.ai_model, cls.ai_cols, cls.ai_vec, cls.ai_enc = None, None, None, None
 
         # Seed test user and Inception in database
         from backend.db import get_or_create_user, upsert_user_diary, upsert_movies_batch
@@ -142,7 +137,7 @@ class TestMovieTitleSearch(unittest.TestCase):
         self.assertEqual(first.get('title'), 'Parasite')
 
     def test_08_direct_analyze_function(self):
-        ai_analysis = {'genres': [], 'search_query': '', 'suggested_titles': []}
+        ai_analysis = {'genres': [], 'search_query': ''}
         picks = analyze(
             [], [], self.hated,
             ai_analysis, self.ai_model, self.ai_cols, self.ai_vec, self.ai_enc,

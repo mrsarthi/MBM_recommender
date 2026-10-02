@@ -5,7 +5,7 @@ import pandas as pd
 from backend.query_parser import (
     _extract_year_constraints,
     _extract_reference_entity,
-    interpret_query_with_ai
+    interpret_query
 )
 from backend.recommender import analyze
 from backend.in_memory_model import train_user_model_in_memory
@@ -48,87 +48,17 @@ class TestDiscoverySearchPipeline(unittest.TestCase):
         self.assertEqual(ymax3, 1989)
 
     def test_02_ai_interpretation_fallback_structure(self):
-        """Test interpret_query_with_ai fallback returns clean structured payload without API key."""
-        result = interpret_query_with_ai(
-            "Something like the odyssey from before 2000s",
-            custom_api_key="YOUR_GEMINI_API_KEY_HERE"
-        )
+        """Test interpret_query returns a clean structured payload."""
+        result = interpret_query("Something like the odyssey from before 2000s")
         self.assertEqual(result.get('year_max'), 1999)
         self.assertEqual(result.get('reference_entity', '').lower(), "the odyssey")
         self.assertIn('Adventure', result.get('genres', []))
 
-    def test_03_title_first_ripple_and_year_filtering(self):
-        """Test that analyze() resolves suggested titles, expands via ripple, and strictly filters years."""
-        mock_ai_analysis = {
-            'genres': ['Adventure', 'Fantasy'],
-            'search_query': 'mythological epic voyage',
-            'year_max': 1999,
-            'suggested_titles': [
-                {'title': 'Jason and the Argonauts', 'year': '1963', 'vibe_pitch': 'Classic mythical quest.'},
-                {'title': 'The Odyssey', 'year': '1997', 'vibe_pitch': 'Faithful Homeric adaptation.'}
-            ]
-        }
-
-        # Simulated TMDB response router
-        def mock_tmdb_get(url, params=None, **kwargs):
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            p = params or {}
-            
-            if 'search/movie' in url:
-                q = p.get('query', '').lower()
-                if 'jason and the argonauts' in q:
-                    mock_resp.json.return_value = {'results': [{'id': 1001, 'title': 'Jason and the Argonauts', 'release_date': '1963-06-19', 'genre_ids': [12, 14]}]}
-                elif 'the odyssey' in q:
-                    mock_resp.json.return_value = {'results': [{'id': 1002, 'title': 'The Odyssey', 'release_date': '1997-05-18', 'genre_ids': [12, 18]}]}
-                else:
-                    mock_resp.json.return_value = {'results': []}
-            elif 'recommendations' in url:
-                # Returns 1 valid pre-2000 film and 1 post-2000 film
-                mock_resp.json.return_value = {'results': [
-                    {'id': 1003, 'title': 'The 7th Voyage of Sinbad', 'release_date': '1958-12-23', 'genre_ids': [12, 14]},
-                    {'id': 1004, 'title': 'Troy', 'release_date': '2004-05-14', 'genre_ids': [12, 28]} # Should be filtered out!
-                ]}
-            elif 'discover/movie' in url:
-                mock_resp.json.return_value = {'results': [
-                    {'id': 1005, 'title': 'Facing El Chapo', 'release_date': '2024-01-01', 'genre_ids': [99]} # Should be filtered out!
-                ]}
-            else:
-                mock_resp.json.return_value = {'results': []}
-            return mock_resp
-
-        with patch('backend.in_memory_model.get_diary_training_df', return_value=self.sample_df):
-            model, cols, vec, encoders = train_user_model_in_memory('test_cinephile')
-            with patch('backend.recommender.http_session.get', side_effect=mock_tmdb_get):
-                results = analyze(
-                    watchedSet_titles=set(),
-                    watchedSet_ids=set(),
-                    hated_movies=[],
-                    ai_analysis=mock_ai_analysis,
-                    ai_model=model,
-                    ai_columns=cols,
-                    ai_vectorizer=vec,
-                    ai_encoders=encoders,
-                    raw_prompt="Something like the odyssey from before 2000s",
-                    source="discover"
-                )
-
-                result_titles = [r['title'] for r in results]
-                # Seed titles resolved
-                self.assertIn('Jason and the Argonauts', result_titles)
-                self.assertIn('The Odyssey', result_titles)
-                # Ripple expansion title retained (1958)
-                self.assertIn('The 7th Voyage of Sinbad', result_titles)
-                # Post-2000 titles strictly excluded!
-                self.assertNotIn('Troy', result_titles)
-                self.assertNotIn('Facing El Chapo', result_titles)
-
-    def test_04_fallback_reference_entity_ripple_without_gemini(self):
-        """Test zero-AI fallback: reference entity 'the odyssey' expands via TMDB recommendations."""
+    def test_04_reference_entity_ripple(self):
+        """Test reference entity 'the odyssey' expands via TMDB recommendations."""
         fallback_analysis = {
             'genres': ['Adventure', 'Fantasy'],
             'search_query': 'Something like the odyssey from before 2000s',
-            'suggested_titles': [],
             'reference_entity': 'the odyssey',
             'year_max': 1999
         }

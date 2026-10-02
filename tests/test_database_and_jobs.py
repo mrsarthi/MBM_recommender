@@ -4,7 +4,7 @@ import requests
 import pandas as pd
 from backend.db import (
     init_db, get_or_create_user, verify_user_pin,
-    upsert_movies_batch, get_existing_movie_ids,
+    upsert_movies_batch, get_connection, release_connection,
     upsert_user_diary, get_user_diary, get_user_diary_map,
     upsert_user_watchlist, get_user_watchlist,
     remove_from_user_watchlist, add_to_user_watchlist,
@@ -43,7 +43,7 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
 
     def test_01_user_creation_and_pin_auth(self):
         test_user = "test_cinephile_99"
-        user = get_or_create_user(test_user, pin="4321", tmdb_key="test_tmdb", gemini_key="test_gemini")
+        user = get_or_create_user(test_user, pin="4321", tmdb_key="test_tmdb")
         self.assertIsNotNone(user)
         self.assertEqual(user['username'], test_user)
 
@@ -84,7 +84,13 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
             }
         ]
         upsert_movies_batch(movies)
-        existing = get_existing_movie_ids([36592, 157336, 99999999])
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT movie_id FROM movies WHERE movie_id = ANY(%s)", ([36592, 157336, 99999999],))
+                existing = {r[0] for r in cur.fetchall()}
+        finally:
+            release_connection(conn)
         self.assertIn(36592, existing)
         self.assertIn(157336, existing)
         self.assertNotIn(99999999, existing)
@@ -289,12 +295,11 @@ class TestNeonDatabaseAndJobs(unittest.TestCase):
         add_to_user_watchlist(test_username, m_scifi)
         add_to_user_watchlist(test_username, m_horror)
 
-        # Patch interpret_query_with_ai directly to bypass live API calls
-        with patch('backend.api.interpret_query_with_ai') as mock_interpret:
+        # Patch interpret_query to pin the parsed intent for this test
+        with patch('backend.api.interpret_query') as mock_interpret:
             mock_interpret.return_value = {
                 'genres': ['Horror'],
-                'search_query': 'paranormal',
-                'suggested_titles': ['The Conjuring']
+                'search_query': 'paranormal'
             }
 
             # Post recommendation request with source='watchlist'

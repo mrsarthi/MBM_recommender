@@ -106,7 +106,7 @@ class TestModelOfflineEvalAndUpgrades(unittest.TestCase):
                     watchedSet_titles=set(),
                     watchedSet_ids=set(),
                     hated_movies=hated_movies,
-                    ai_analysis={'genres': ['Action', 'Thriller'], 'search_query': 'scifi', 'suggested_titles': []},
+                    ai_analysis={'genres': ['Action', 'Thriller'], 'search_query': 'scifi'},
                     ai_model=model,
                     ai_columns=cols,
                     ai_vectorizer=vec,
@@ -212,7 +212,6 @@ class TestModelOfflineEvalAndUpgrades(unittest.TestCase):
                     ai_analysis={
                         'genres': ['Adventure', 'Fantasy'],
                         'search_query': 'greek mythology epic quest',
-                        'suggested_titles': [],
                         'year_max': 1999
                     },
                     ai_model=model,

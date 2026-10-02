@@ -11,7 +11,7 @@ root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-from backend.api import ThreadedHTTPServer, CineAIRequestHandler, create_session_token
+from backend.api import ThreadedHTTPServer, MBMRRequestHandler, create_session_token
 from backend.config import LETTERBOXD_USERNAME
 
 TEST_PORT = 9988
@@ -20,7 +20,7 @@ BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
 class TestCineAIAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadedHTTPServer(('127.0.0.1', TEST_PORT), CineAIRequestHandler)
+        cls.server = ThreadedHTTPServer(('127.0.0.1', TEST_PORT), MBMRRequestHandler)
         cls.thread = threading.Thread(target=cls.server.serve_forever)
         cls.thread.daemon = True
         cls.thread.start()
