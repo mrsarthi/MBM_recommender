@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mbmr-shell-v6.4';
+const CACHE_NAME = 'mbmr-shell-v6.6';
 const IMAGE_CACHE_NAME = 'mbmr-images-v1';
 
 const STATIC_PRECACHE = [
@@ -6,6 +6,7 @@ const STATIC_PRECACHE = [
   '/index.html',
   '/styles.css',
   '/app.js',
+  '/arcade.js',
   '/assets/logo.svg',
   'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap'
 ];

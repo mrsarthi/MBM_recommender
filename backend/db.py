@@ -1,5 +1,4 @@
 import os
-import re
 import hashlib
 import json
 import time
@@ -315,7 +314,6 @@ def init_db():
                     username VARCHAR(100) UNIQUE NOT NULL,
                     pin_hash VARCHAR(255),
                     tmdb_key VARCHAR(255),
-                    gemini_key VARCHAR(255),
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 );
@@ -329,6 +327,7 @@ def init_db():
                     director VARCHAR(255),
                     cast_members TEXT,
                     keywords TEXT,
+                    original_language VARCHAR(10),
                     runtime INTEGER DEFAULT 0,
                     vote_average NUMERIC(4, 1) DEFAULT 7.0,
                     poster_path VARCHAR(255),
@@ -356,6 +355,7 @@ def init_db():
                 );
 
                 ALTER TABLE movies ADD COLUMN IF NOT EXISTS letterboxd_slug VARCHAR(255);
+                ALTER TABLE movies ADD COLUMN IF NOT EXISTS original_language VARCHAR(10);
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts INT DEFAULT 0;
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE NULL;
 
@@ -387,12 +387,11 @@ def get_user(username: str):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, username, pin_hash, tmdb_key, gemini_key FROM users WHERE username = %s", (clean_user,))
+            cur.execute("SELECT id, username, pin_hash, tmdb_key FROM users WHERE username = %s", (clean_user,))
             row = cur.fetchone()
             if row:
                 d = dict(row)
                 d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
-                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
                 _user_cache[clean_user] = {'data': d, 'time': time.time()}
                 return dict(d)
             return None
@@ -403,11 +402,11 @@ def get_user(username: str):
 def get_user_summary_stats(username: str):
     """
     Ultra-fast single-roundtrip query for /api/status.
-    Returns (total_films, watchlist_count, avg_rating, has_tmdb, has_gemini) in < 1ms cached.
+    Returns (total_films, watchlist_count, avg_rating, has_tmdb) in < 1ms cached.
     """
     user = get_user(username)
     if not user:
-        return 0, 0, 0.0, False, False
+        return 0, 0, 0.0, False
 
     cache_key = f"summary_{user['id']}"
     cached = _get_cache(cache_key)
@@ -428,15 +427,14 @@ def get_user_summary_stats(username: str):
             avg_rating = float(row[1] or 0.0)
             watchlist_count = int(row[2] or 0)
             has_tmdb = bool(user.get('tmdb_key'))
-            has_gemini = bool(user.get('gemini_key'))
-            result = (total_films, watchlist_count, avg_rating, has_tmdb, has_gemini)
+            result = (total_films, watchlist_count, avg_rating, has_tmdb)
             _set_cache(cache_key, result)
             return result
     finally:
         release_connection(conn)
 
 
-def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None, gemini_key: str = None):
+def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None):
     clean_user = username.strip().lstrip('@').lower()
     if not clean_user:
         return None
@@ -444,7 +442,7 @@ def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None, gem
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, username, pin_hash, tmdb_key, gemini_key FROM users WHERE username = %s", (clean_user,))
+            cur.execute("SELECT id, username, pin_hash, tmdb_key FROM users WHERE username = %s", (clean_user,))
             user = cur.fetchone()
             if user:
                 # Security: If account already has a PIN hash set, DO NOT allow overwriting it blindly
@@ -457,36 +455,30 @@ def get_or_create_user(username: str, pin: str = None, tmdb_key: str = None, gem
                 if tmdb_key:
                     updates.append("tmdb_key = %s")
                     params.append(encrypt_key(tmdb_key))
-                if gemini_key:
-                    updates.append("gemini_key = %s")
-                    params.append(encrypt_key(gemini_key))
                 
                 if updates:
                     updates.append("updated_at = NOW()")
                     params.append(clean_user)
-                    cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE username = %s RETURNING id, username, pin_hash, tmdb_key, gemini_key", params)
+                    cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE username = %s RETURNING id, username, pin_hash, tmdb_key", params)
                     updated = cur.fetchone()
                     conn.commit()
                     if updated:
                         user = updated
                 d = dict(user)
                 d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
-                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
                 _user_cache[clean_user] = {'data': d, 'time': time.time()}
                 return d
             else:
                 pin_h = hash_pin(pin) if pin else ""
                 tmdb_enc = encrypt_key(tmdb_key) if tmdb_key else ""
-                gemini_enc = encrypt_key(gemini_key) if gemini_key else ""
                 cur.execute("""
-                    INSERT INTO users (username, pin_hash, tmdb_key, gemini_key)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id, username, pin_hash, tmdb_key, gemini_key
-                """, (clean_user, pin_h, tmdb_enc, gemini_enc))
+                    INSERT INTO users (username, pin_hash, tmdb_key)
+                    VALUES (%s, %s, %s)
+                    RETURNING id, username, pin_hash, tmdb_key
+                """, (clean_user, pin_h, tmdb_enc))
                 conn.commit()
                 d = dict(cur.fetchone())
                 d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
-                d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
                 _user_cache[clean_user] = {'data': d, 'time': time.time()}
                 return d
     finally:
@@ -500,7 +492,7 @@ def verify_user_pin(username: str, pin: str):
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, username, pin_hash, tmdb_key, gemini_key, failed_attempts, locked_until 
+                SELECT id, username, pin_hash, tmdb_key, failed_attempts, locked_until 
                 FROM users 
                 WHERE username = %s
             """, (clean_user,))
@@ -560,7 +552,6 @@ def verify_user_pin(username: str, pin: str):
 
             d = dict(user)
             d['tmdb_key'] = decrypt_key(d.get('tmdb_key', ''))
-            d['gemini_key'] = decrypt_key(d.get('gemini_key', ''))
             return True, "Login successful", d
     finally:
         release_connection(conn)
@@ -617,9 +608,13 @@ def upsert_movies_batch(movies_list):
         if slug.lower() == 'nan':
             slug = ''
 
+        language = str(m.get('original_language') or '').strip().lower()[:10]
+        if language == 'nan':
+            language = ''
+
         deduped_records[m_id] = (
             m_id, title, year, genres_str, overview, director, cast, keywords,
-            runtime, vote_avg, poster, backdrop, slug
+            runtime, vote_avg, poster, backdrop, slug, language
         )
 
     records = list(deduped_records.values())
@@ -632,7 +627,7 @@ def upsert_movies_batch(movies_list):
             execute_values(cur, """
                 INSERT INTO movies (
                     movie_id, title, year, genres, overview, director, cast_members, keywords,
-                    runtime, vote_average, poster_path, backdrop_path, letterboxd_slug
+                    runtime, vote_average, poster_path, backdrop_path, letterboxd_slug, original_language
                 ) VALUES %s
                 ON CONFLICT (movie_id) DO UPDATE SET
                     title = EXCLUDED.title,
@@ -647,11 +642,37 @@ def upsert_movies_batch(movies_list):
                     poster_path = COALESCE(NULLIF(EXCLUDED.poster_path, ''), movies.poster_path),
                     backdrop_path = COALESCE(NULLIF(EXCLUDED.backdrop_path, ''), movies.backdrop_path),
                     letterboxd_slug = COALESCE(NULLIF(EXCLUDED.letterboxd_slug, ''), movies.letterboxd_slug),
+                    original_language = COALESCE(NULLIF(EXCLUDED.original_language, ''), movies.original_language),
                     updated_at = NOW()
             """, records)
             conn.commit()
     finally:
         release_connection(conn)
+
+def fill_movie_metadata(rows):
+    """
+    Backfills language and TMDB tags looked up at search time, so each film is
+    fetched from TMDB once. Never overwrites values that are already stored.
+    rows: iterable of (movie_id, original_language, keywords_str)
+    """
+    rows = [(str(lang or '')[:10], str(kw or ''), int(mid)) for mid, lang, kw in rows if mid]
+    if not rows:
+        return
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # One statement for the whole batch (Neon round trips dominate otherwise)
+            execute_values(cur, """
+                UPDATE movies AS m SET
+                    original_language = COALESCE(NULLIF(m.original_language, ''), NULLIF(v.lang, '')),
+                    keywords = COALESCE(NULLIF(m.keywords, ''), NULLIF(v.kw, ''))
+                FROM (VALUES %s) AS v(lang, kw, movie_id)
+                WHERE m.movie_id = v.movie_id
+            """, rows)
+            conn.commit()
+    finally:
+        release_connection(conn)
+
 
 def get_movie_ids_by_slugs(slugs):
     """
@@ -673,22 +694,6 @@ def get_movie_ids_by_slugs(slugs):
                 (clean,)
             )
             return {r[0]: r[1] for r in cur.fetchall()}
-    finally:
-        release_connection(conn)
-
-def get_existing_movie_ids(movie_ids):
-    """Returns set of movie_ids that already exist in the shared movies table."""
-    if not movie_ids:
-        return set()
-    clean_ids = [int(x) for x in movie_ids if x and str(x).isdigit()]
-    if not clean_ids:
-        return set()
-    
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT movie_id FROM movies WHERE movie_id = ANY(%s)", (clean_ids,))
-            return {r[0] for r in cur.fetchall()}
     finally:
         release_connection(conn)
 
@@ -923,7 +928,7 @@ def get_user_watchlist(username: str):
             cur.execute("""
                 SELECT 
                     m.movie_id, m.movie_id AS id, m.title, m.year, m.genres, m.overview,
-                    m.director, m.cast_members AS cast, m.runtime, m.vote_average,
+                    m.director, m.cast_members AS cast, m.keywords, m.original_language, m.runtime, m.vote_average,
                     m.poster_path, m.backdrop_path, w.added_date, w.id AS watchlist_entry_id
                 FROM user_watchlist w
                 JOIN movies m ON w.movie_id = m.movie_id
@@ -995,93 +1000,3 @@ def get_diary_training_df(username: str):
             return df.copy()
     finally:
         release_connection(conn)
-
-def get_user_taste_anchors(username: str):
-    """
-    Extracts a quick, high-signal taste profile (top directors, 5★ favorites, top genres)
-    from the user's logged diary in Neon DB for grounding AI prompts.
-    """
-    user = get_user(username)
-    if not user:
-        return {'top_directors': [], 'favorite_movies': [], 'top_genres': [], 'preferred_decades': []}
-
-    cache_key = f"anchors_{user['id']}"
-    cached = _get_cache(cache_key)
-    if cached is not None:
-        return cached
-
-    records, total, _ = get_user_diary(username, sort_mode='Highest Rating First')
-    if not records:
-        empty_res = {'top_directors': [], 'favorite_movies': [], 'top_genres': [], 'preferred_decades': []}
-        _set_cache(cache_key, empty_res)
-        return empty_res
-
-    # 1. Top 5-star / High-rated Favorites
-    fav_movies = []
-    seen_titles = set()
-    for r in records:
-        r_score = r.get('Rating') or r.get('rating')
-        t = str(r.get('title') or '').strip()
-        if r_score and float(r_score) >= 4.0 and t and t.lower() not in seen_titles:
-            seen_titles.add(t.lower())
-            fav_movies.append(t)
-            if len(fav_movies) >= 5:
-                break
-
-    # 2. Top Directors
-    director_scores = {}
-    director_counts = {}
-    for r in records:
-        r_score = r.get('Rating') or r.get('rating')
-        director = str(r.get('director') or '').strip()
-        if not director or director.lower() in ('nan', 'none', 'unknown'):
-            continue
-        # Split in case multiple directors listed
-        for d in re.split(r'[,/]', director):
-            d_clean = d.strip()
-            if not d_clean or len(d_clean) < 3:
-                continue
-            director_counts[d_clean] = director_counts.get(d_clean, 0) + 1
-            if r_score:
-                director_scores.setdefault(d_clean, []).append(float(r_score))
-
-    # Prefer directors with multiple logged films and high avg rating
-    scored_directors = []
-    for d, counts in director_counts.items():
-        scores = director_scores.get(d, [3.5])
-        avg_score = sum(scores) / len(scores)
-        # Weight by count and avg score
-        if avg_score >= 3.5:
-            scored_directors.append((d, avg_score, counts))
-
-    scored_directors.sort(key=lambda x: (x[1] >= 4.0, x[2], x[1]), reverse=True)
-    top_directors = [d[0] for d in scored_directors[:4]]
-
-    # 3. Top Genres
-    genre_counts = {}
-    for r in records:
-        g_str = str(r.get('genres') or '')
-        for g in g_str.split(','):
-            g_clean = g.strip()
-            if g_clean and g_clean.lower() not in ('nan', 'none', 'general'):
-                genre_counts[g_clean] = genre_counts.get(g_clean, 0) + 1
-    top_genres = [g[0] for g in sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:4]]
-
-    # 4. Preferred Decades
-    decade_counts = {}
-    for r in records:
-        y_str = str(r.get('year') or '')[:4]
-        if y_str.isdigit() and len(y_str) == 4:
-            dec = f"{y_str[:3]}0s"
-            decade_counts[dec] = decade_counts.get(dec, 0) + 1
-    top_decades = [d[0] for d in sorted(decade_counts.items(), key=lambda x: x[1], reverse=True)[:3]]
-
-    anchors = {
-        'top_directors': top_directors,
-        'favorite_movies': fav_movies[:4],
-        'top_genres': top_genres,
-        'preferred_decades': top_decades
-    }
-    _set_cache(cache_key, anchors)
-    return anchors
-

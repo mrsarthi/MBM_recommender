@@ -14,6 +14,9 @@ let watchlistIds = new Set();
 let diaryMap = new Map(); // movie_id -> { rating, watched_date }
 let diaryTitles = new Map(); // normalized_title -> { rating, watched_date }
 let currentMatchmakerWinner = null;
+let sessionPickedMovieIds = new Set();
+let quickWatchActive = false;
+let currentRuntimeFilter = 'All';
 let currentWatchlistCluster = 'All';
 let discoverMode = 'search';
 let currentView = 'watchlist';
@@ -201,7 +204,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const needsOnboard = await checkOnboarding();
     if (!needsOnboard) {
         await hydrateFromStorage();
-        loadStatus();
+        loadStatus({ coldStart: true });
         switchView('watchlist');
         loadUserDataSets();
     } else {
@@ -245,7 +248,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // ── Onboarding Controller ──
 
-async function loadStatus() {
+// coldStart: first load of the page, when a sleeping backend opens the Cinema Lounge.
+// Later refreshes (after logging, syncing) never interrupt the user with it.
+async function loadStatus({ coldStart = false } = {}) {
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     let wakeTimer = null;
     if (!isLocal) {
@@ -255,27 +260,78 @@ async function loadStatus() {
         }, 6000);
     }
 
-    try {
-        const localUser = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
-        const userParam = localUser ? `?user=${encodeURIComponent(localUser)}` : '';
-        const d = await (await mbmrFetch(`${API}/api/status${userParam}`)).json();
-        if (wakeTimer) clearTimeout(wakeTimer);
-        const b = document.getElementById('render-wake-banner');
-        if (b) b.style.display = 'none';
+    let loungePoller = null;
 
-        document.getElementById('nav-count').textContent = d.total_films || 0;
-        document.getElementById('journal-total-count').textContent = d.total_films || 0;
-        document.getElementById('journal-avg-rating').textContent = d.avg_rating ? `${d.avg_rating}★` : '—';
-        
-        const activeUser = localUser || d.username || 'guest';
-        document.getElementById('profile-user').textContent = `@${activeUser}`;
-        const userInput = document.getElementById('sync-user-input');
-        if (userInput) userInput.value = activeUser === 'guest' ? '' : activeUser;
+    async function checkServerStatus() {
+        try {
+            const localUser = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
+            const userParam = localUser ? `?user=${encodeURIComponent(localUser)}` : '';
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2500);
+            const res = await mbmrFetch(`${API}/api/status${userParam}`, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            const d = await res.json();
+            clearTimeout(wakeTimer);
+            const b = document.getElementById('render-wake-banner');
+            if (b) b.style.display = 'none';
 
-        updateWatchlistBadge(d.watchlist_count || 0);
-    } catch(e) {
-        console.warn('Status fetch failed', e);
+            document.getElementById('nav-count').textContent = d.total_films || 0;
+            document.getElementById('journal-total-count').textContent = d.total_films || 0;
+            document.getElementById('journal-avg-rating').textContent = d.avg_rating ? `${d.avg_rating}★` : '—';
+
+            const activeUser = localUser || d.username || 'guest';
+            document.getElementById('profile-user').textContent = `@${activeUser}`;
+            const userInput = document.getElementById('sync-user-input');
+            if (userInput) userInput.value = activeUser === 'guest' ? '' : activeUser;
+
+            updateWatchlistBadge(d.watchlist_count || 0);
+            return true;
+        } catch(e) {
+            console.warn('Status fetch failed', e);
+            return false;
+        }
     }
+
+    const ok = await checkServerStatus();
+
+    if (!ok && coldStart) {
+        showCinemaLounge();
+        setLoungeServerState('sleeping');
+        const wakeStarted = Date.now();
+        const countdown = setInterval(() => {
+            const left = Math.max(0, 45 - Math.round((Date.now() - wakeStarted) / 1000));
+            const el = document.getElementById('lounge-countdown');
+            if (el) el.textContent = left > 0 ? `~${left}s` : 'almost there…';
+        }, 1000);
+
+        // Chained timeouts, so a slow check never overlaps the next one
+        const poll = async () => {
+            if (await checkServerStatus()) {
+                clearInterval(countdown);
+                loadUserDataSets();
+                onServerAwake();
+            } else {
+                loungePoller = setTimeout(poll, 3000);
+            }
+        };
+        loungePoller = setTimeout(poll, 3000);
+    }
+}
+
+function onServerAwake() {
+    setLoungeServerState('online');
+    const overlay = document.getElementById('cinema-lounge-overlay');
+    // Still in the lounge: let them choose; otherwise they've already moved on
+    if (overlay && overlay.style.display !== 'none') showLoungeReadyToast();
+}
+
+function setLoungeServerState(state) {
+    const overlay = document.getElementById('cinema-lounge-overlay');
+    if (overlay) overlay.classList.toggle('server-online', state === 'online');
+    const status = document.getElementById('lounge-status-text');
+    if (status) status.textContent = state === 'online' ? 'MBMR Engine Online' : 'MBMR Engine Sleeping';
+    const countdown = document.getElementById('lounge-countdown');
+    if (countdown && state === 'online') countdown.textContent = 'ready';
 }
 
 // Safety no-op for backward compatibility
@@ -293,6 +349,8 @@ function updateWatchlistBadge(count) {
 
 // ── View Switching ──
 function switchView(name) {
+    // Hide Cinema Lounge if open
+    if (typeof hideCinemaLounge === 'function') hideCinemaLounge();
     currentView = name;
     document.querySelectorAll('.rail-icon').forEach(b => b.classList.toggle('active', b.dataset.view === name));
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -368,7 +426,8 @@ async function generateRecommendations() {
                 context: document.getElementById('context-select').value,
                 streaming: document.getElementById('stream-select').value,
                 source: sourceVal,
-                username
+                username,
+                runtime_max: quickWatchActive ? 90 : null
             })
         });
         const data = await res.json();
@@ -659,9 +718,10 @@ async function fetchWatchlist(resetPage = true) {
     const stream = document.getElementById('wl-stream-select')?.value || 'All Platforms';
     const sort = document.getElementById('wl-sort-select')?.value || 'Highest Predicted ★';
     const username = (await MBMRStorage.get('letterboxd_username')) || (await MBMRStorage.get('mbmr_active_user')) || '';
-    const cacheKey = `${username}_${currentWatchlistCluster}_${sort}_${stream}`;
+    const cacheKey = `${username}_${currentWatchlistCluster}_${sort}_${stream}_${currentRuntimeFilter}`;
     const userParam = username ? `&user=${encodeURIComponent(username)}` : '';
-    const url = `${API}/api/watchlist?cluster=${encodeURIComponent(currentWatchlistCluster)}&sort=${encodeURIComponent(sort)}&platform=${encodeURIComponent(stream)}${userParam}`;
+    const runtimeParam = currentRuntimeFilter === '< 90 min' ? `&runtime_max=90` : '';
+    const url = `${API}/api/watchlist?cluster=${encodeURIComponent(currentWatchlistCluster)}&sort=${encodeURIComponent(sort)}&platform=${encodeURIComponent(stream)}${runtimeParam}${userParam}`;
     const dock = document.getElementById('dock-label');
 
     // 1. Instant Cache Hit (0ms render)
@@ -900,7 +960,7 @@ async function executePickTonight() {
         const res = await mbmrFetch(`${API}/api/watchlist/pick_tonight`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ duration, mood, username })
+            body: JSON.stringify({ duration, mood, username, excluded_ids: Array.from(sessionPickedMovieIds) })
         });
         const data = await res.json();
         if (!data.success || !data.movie) {
@@ -928,6 +988,57 @@ async function executePickTonight() {
             rollBtn.innerHTML = originalText;
         }
     }
+}
+
+async function rerollPickTonight() {
+    const rerollBtn = document.getElementById('pick-reroll-btn');
+    const originalText = rerollBtn ? rerollBtn.innerHTML : '🎲 Reroll Pick';
+
+    if (rerollBtn) {
+        rerollBtn.disabled = true;
+        rerollBtn.classList.add('spinning');
+        rerollBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:8px;"></span> Rerolling...';
+    }
+
+    if (currentMatchmakerWinner && currentMatchmakerWinner.movie_id) {
+        sessionPickedMovieIds.add(currentMatchmakerWinner.movie_id);
+    }
+
+    // Keep only the last 3 excluded IDs to prevent exhausting the entire watchlist
+    if (sessionPickedMovieIds.size > 3) {
+        const idsArr = Array.from(sessionPickedMovieIds);
+        sessionPickedMovieIds = new Set(idsArr.slice(-3));
+    }
+
+    setTimeout(() => {
+        executePickTonight();
+        if (rerollBtn) {
+            rerollBtn.classList.remove('spinning');
+            rerollBtn.innerHTML = originalText;
+        }
+    }, 300);
+}
+
+function toggleQuickWatch() {
+    const btn = document.getElementById('quick-filter-btn');
+    if (!btn) return;
+    quickWatchActive = !quickWatchActive;
+    if (quickWatchActive) {
+        btn.classList.add('active');
+        btn.style.background = 'var(--accent)';
+        btn.style.color = 'var(--bg)';
+    } else {
+        btn.classList.remove('active');
+        btn.style.background = '';
+        btn.style.color = '';
+    }
+    generateRecommendations();
+}
+
+function applyWatchlistFilters() {
+    const runtimeSelect = document.getElementById('wl-runtime-select');
+    currentRuntimeFilter = runtimeSelect ? runtimeSelect.value : 'All';
+    fetchWatchlist(true);
 }
 
 function openWinnerSpotlight() {
@@ -990,6 +1101,41 @@ async function triggerWatchlistSync() {
     }
 }
 
+// ── Cinema Lounge Integration ──
+function showCinemaLounge() {
+    const overlay = document.getElementById('cinema-lounge-overlay');
+    if (overlay) overlay.style.display = 'flex';
+    if (window.CinemaArcadeEngine && window.CinemaArcadeEngine.showLounge) {
+        window.CinemaArcadeEngine.showLounge();
+    }
+    // Add active class to lounge button
+    const loungeBtn = document.getElementById('lounge-btn');
+    if (loungeBtn) loungeBtn.classList.add('active');
+    // Disable main view navigation
+    document.querySelectorAll('.rail-icon[data-view]').forEach(b => b.style.opacity = '0.5');
+}
+
+function hideCinemaLounge() {
+    if (window.CinemaArcadeEngine) window.CinemaArcadeEngine.stopAll();
+    const overlay = document.getElementById('cinema-lounge-overlay');
+    if (overlay) overlay.style.display = 'none';
+    const toast = document.getElementById('lounge-ready-toast');
+    if (toast) toast.style.display = 'none';
+    const loungeBtn = document.getElementById('lounge-btn');
+    if (loungeBtn) loungeBtn.classList.remove('active');
+    document.querySelectorAll('.rail-icon[data-view]').forEach(b => b.style.opacity = '');
+}
+
+function showLoungeReadyToast() {
+    const toast = document.getElementById('lounge-ready-toast');
+    if (!toast) return;
+    toast.style.display = 'flex';
+    const resume = document.getElementById('lounge-resume-btn');
+    const keepPlaying = document.getElementById('lounge-keep-playing-btn');
+    if (resume) resume.onclick = () => hideCinemaLounge();
+    if (keepPlaying) keepPlaying.onclick = () => { toast.style.display = 'none'; };
+}
+
 // ── Spotlight Drawer ──
 function openSpotlight(m, isFromDiary = false) {
     currentSpotlight = m;
@@ -998,6 +1144,30 @@ function openSpotlight(m, isFromDiary = false) {
     document.getElementById('spotlight-title').textContent = m.title || 'Untitled';
     const year = (m.release_date || m.year || '').split('-')[0] || '';
     document.getElementById('spotlight-meta').textContent = `${year} · TMDB ${m.vote_average || 'N/A'}`;
+    
+    const dirVal = document.getElementById('spotlight-director-val');
+    const castVal = document.getElementById('spotlight-cast-val');
+    if (dirVal) dirVal.textContent = (m.director && m.director.trim()) ? m.director : '—';
+    if (castVal) castVal.textContent = (m.cast && m.cast.length) ? m.cast.slice(0, 5).join(', ') : '—';
+    
+    if ((!m.director || !m.cast) && mId) {
+        (async () => {
+            try {
+                const creditsRes = await fetch(`${API}/api/movie_credits?id=${mId}`);
+                if (creditsRes.ok) {
+                    const credits = await creditsRes.json();
+                    if (dirVal && !dirVal.textContent || dirVal.textContent === '—') {
+                        dirVal.textContent = credits.director || '—';
+                    }
+                    if (castVal && (!castVal.textContent || castVal.textContent === '—')) {
+                        castVal.textContent = (credits.cast || []).slice(0, 5).join(', ');
+                    }
+                }
+            } catch(e) {
+                console.warn('Credits fetch failed', e);
+            }
+        })();
+    }
     const pct = Math.min(99, Math.max(60, Math.round((m.ai_score || 3.5) * 20)));
     document.getElementById('spotlight-ai-score').textContent = isFromDiary && m.user_rating ? `Logged: ★ ${m.user_rating}` : `${pct}% Match`;
     document.getElementById('spotlight-overview').textContent = m.overview || 'No synopsis available.';

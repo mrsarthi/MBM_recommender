@@ -6,11 +6,11 @@ import unittest
 import time
 from backend.predictions import predict_movie_score, predict_movie_scores_batch
 from backend.in_memory_model import train_user_model_in_memory, get_or_train_user_model
-from backend.query_parser import interpret_query_with_ai, CASCADE_MODELS, _fallback_mood_match
+from backend.query_parser import interpret_query
 from backend.db import get_or_create_user, upsert_user_diary, upsert_movies_batch, get_user_watchlist
 import pandas as pd
 
-class TestFastWatchlistAndGeminiFallback(unittest.TestCase):
+class TestFastScoringAndQueryParser(unittest.TestCase):
 
     def setUp(self):
         # Create a test user with sample training data
@@ -61,44 +61,19 @@ class TestFastWatchlistAndGeminiFallback(unittest.TestCase):
             self.assertGreaterEqual(s, 0.5)
             self.assertLessEqual(s, 5.0)
 
-    def test_02_gemini_cascade_models_active(self):
-        """Test that the Gemini multi-model fallback cascade responds with structured query JSON."""
-        res = interpret_query_with_ai("mind-bending psychological mystery like shutter island")
-        print("\n[AI RESPONSE]:", res)
+    def test_02_parser_maps_mood_to_genres(self):
+        """Test that the rule-based parser returns structured genres for a mood prompt."""
+        res = interpret_query("mind-bending psychological mystery like shutter island")
         self.assertIn('genres', res)
         self.assertIn('search_query', res)
         self.assertTrue(len(res['genres']) > 0)
         self.assertTrue(any(g in res['genres'] for g in ['Mystery', 'Thriller', 'Science Fiction', 'Drama']))
 
-    def test_03_gemini_fallback_on_invalid_key(self):
-        """Test that when API key is exhausted or invalid, fallback heuristic responds gracefully."""
-        res = interpret_query_with_ai("dark cyberpunk neo-noir detective", custom_api_key="INVALID_KEY_XYZ")
+    def test_03_parser_handles_compound_vibe(self):
+        """Test that a compound vibe prompt maps to plausible genres."""
+        res = interpret_query("dark cyberpunk neo-noir detective")
         self.assertIn('genres', res)
         self.assertTrue(any(g in res['genres'] for g in ['Crime', 'Mystery', 'Thriller', 'Science Fiction', 'Action']))
-
-    def test_04_gemini_cascade_quota_depleted(self):
-        """Test that if the first model's quota is depleted, the request cascades to the next model."""
-        from unittest.mock import patch, Mock
-
-        mock_client = Mock()
-        mock_resp_success = Mock()
-        mock_resp_success.text = '{"genres": ["Horror", "Thriller"], "search_query": "paranormal house", "suggested_titles": [{"title": "The Conjuring", "year": "2013", "vibe_pitch": "Haunted house"}]}'
-
-        # The side_effect will raise an exception for the first model, and return response for the second model
-        mock_client.models.generate_content.side_effect = [
-            Exception("429 Resource Exhausted"),
-            mock_resp_success
-        ]
-
-        with patch('backend.query_parser._get_genai_client', return_value=mock_client):
-            res = interpret_query_with_ai("scary ghost house", custom_api_key="DUMMY_KEY")
-
-            self.assertEqual(mock_client.models.generate_content.call_count, 2)
-            self.assertIn('genres', res)
-            self.assertEqual(res['genres'], ['Horror', 'Thriller'])
-            self.assertEqual(res['search_query'], 'paranormal house')
-            titles = [t['title'] if isinstance(t, dict) else t for t in res['suggested_titles']]
-            self.assertEqual(titles, ['The Conjuring'])
 
 if __name__ == '__main__':
     unittest.main()

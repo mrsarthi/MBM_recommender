@@ -38,7 +38,7 @@ class TestLogger(unittest.TestCase):
             'username': 'cinephile_99',
             'pin': '1234',
             'api_key': 'secret_key_123',
-            'gemini_key': 'gemini_secret_xyz',
+            'tmdb_key': 'tmdb_secret_xyz',
             'nested': {
                 'password': 'mypassword',
                 'normal_field': 'hello'
@@ -49,7 +49,7 @@ class TestLogger(unittest.TestCase):
         self.assertEqual(sanitized['username'], 'cinephile_99')
         self.assertEqual(sanitized['pin'], '[REDACTED]')
         self.assertEqual(sanitized['api_key'], '[REDACTED]')
-        self.assertEqual(sanitized['gemini_key'], '[REDACTED]')
+        self.assertEqual(sanitized['tmdb_key'], '[REDACTED]')
         self.assertEqual(sanitized['nested']['password'], '[REDACTED]')
         self.assertEqual(sanitized['nested']['normal_field'], 'hello')
 

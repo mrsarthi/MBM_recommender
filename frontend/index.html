@@ -37,6 +37,9 @@
         <button class="rail-icon" data-view="taste" onclick="switchView('taste')" title="Taste Radar">
             <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="10,1 12.5,7 19,7.5 14,12 15.5,19 10,15.5 4.5,19 6,12 1,7.5 7.5,7"/></svg>
         </button>
+        <button class="rail-icon" id="lounge-btn" onclick="showCinemaLounge()" title="Cinema Lounge">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="5" width="18" height="11" rx="5.5"/><line x1="4.5" y1="10.5" x2="8.5" y2="10.5"/><line x1="6.5" y1="8.5" x2="6.5" y2="12.5"/><circle cx="13" cy="9.5" r="0.5"/><circle cx="15.5" cy="11.5" r="0.5"/></svg>
+        </button>
         <div class="rail-spacer"></div>
         <button class="rail-icon" onclick="openSyncModal()" title="Sync Letterboxd">
             <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M19 16v-6h-6"/><path d="M3.5 14a8 8 0 0 0 13.9-2"/><path d="M16.5 6a8 8 0 0 0-13.9 2"/></svg>
@@ -118,6 +121,7 @@
                         <option value="Disney+">Disney+</option>
                         <option value="Max">Max</option>
                     </select>
+                    <button id="quick-filter-btn" class="vibe" onclick="toggleQuickWatch()">⏱️ Less than 90 min</button>
                 </div>
             </div>
 
@@ -166,7 +170,7 @@
                     <span class="wl-chip" onclick="setWatchlistCluster(this, 'Quick Watch')">⏳ Quick (<105m)</span>
                 </div>
 
-                <div class="wl-filter-group">
+                 <div class="wl-filter-group">
                     <select id="wl-stream-select" class="wl-select" onchange="fetchWatchlist()">
                         <option value="All Platforms">All Platforms</option>
                         <option value="Netflix">Netflix</option>
@@ -181,6 +185,11 @@
                         <option value="Runtime (Shortest First)">Runtime (Shortest First)</option>
                         <option value="Recently Added">Recently Added</option>
                         <option value="TMDB Rating">TMDB Rating</option>
+                    </select>
+
+                    <select id="wl-runtime-select" class="wl-select" onchange="applyWatchlistFilters()">
+                        <option value="All">All Durations</option>
+                        <option value="< 90 min">⏱️ Less than 90 min</option>
                     </select>
                 </div>
             </div>
@@ -279,6 +288,8 @@
             <div class="sp-body">
                 <h1 id="spotlight-title" class="sp-title">Title</h1>
                 <div id="spotlight-meta" class="sp-meta">2017 · 2h 44m</div>
+                <div id="spotlight-director-row" class="sp-meta-row"><strong>Director:</strong> <span id="spotlight-director-val">—</span></div>
+                <div id="spotlight-cast-row" class="sp-meta-row"><strong>Starring:</strong> <span id="spotlight-cast-val">—</span></div>
                 <div class="sp-match-row">
                     <span class="sp-match-badge"><span class="sp-match-glyph">✦</span> <span id="spotlight-ai-score">98% Match</span></span>
                 </div>
@@ -358,6 +369,7 @@
                         <div class="winner-actions">
                             <button class="sp-btn primary" onclick="openWinnerSpotlight()">▶ View & Play</button>
                             <button class="sp-btn secondary" onclick="logWinnerDirectly()">⭐ Log Watch</button>
+                            <button id="pick-reroll-btn" class="sp-btn secondary" onclick="rerollPickTonight()">🎲 Reroll Pick</button>
                         </div>
                     </div>
                 </div>
@@ -557,8 +569,32 @@
         </div>
     </div>
 
+ </div>
+
+<!-- Cinema Lounge Overlay -->
+<div id="cinema-lounge-overlay" class="cinema-lounge-overlay" style="display:none;">
+    <div class="lounge-hud">
+        <div class="lounge-status-bar">
+            <span class="lounge-pulse-dot"></span>
+            <span id="lounge-status-text" class="lounge-status-text">MBMR Engine Sleeping</span>
+            <span id="lounge-countdown" class="lounge-countdown">~45s</span>
+            <button id="lounge-exit-btn" class="lounge-exit-btn" onclick="hideCinemaLounge()" title="Back to the app">✕ Exit lounge</button>
+        </div>
+        <div class="lounge-tabs">
+            <button class="lounge-tab active" data-game="trivia-blitz" onclick="showLoungeGame('trivia-blitz')">❓ Trivia Blitz</button>
+            <button class="lounge-tab" data-game="title-scramble" onclick="showLoungeGame('title-scramble')">🔤 Title Scramble</button>
+        </div>
+    </div>
+    <div id="arcade-game-container" class="arcade-game-container"></div>
+    <div id="lounge-ready-toast" class="lounge-ready-toast" style="display:none;" role="status">
+        <span class="lounge-ready-icon">🚀</span>
+        <span class="lounge-ready-text">Server online!</span>
+        <button id="lounge-resume-btn" class="lounge-toast-btn primary">Resume app</button>
+        <button id="lounge-keep-playing-btn" class="lounge-toast-btn">Keep playing</button>
+    </div>
 </div>
 
-<script src="app.js?v=6.0"></script>
+<script src="arcade.js?v=6.5"></script>
+<script src="app.js?v=6.5"></script>
 </body>
 </html>

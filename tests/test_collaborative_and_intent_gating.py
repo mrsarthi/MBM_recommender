@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import unittest
-from backend.query_parser import interpret_query_with_ai, _extract_negations
+from backend.query_parser import interpret_query, _extract_negations
 from backend.recommender import analyze
 from backend.collaborative import collaborative_engine
 
@@ -21,7 +21,7 @@ class TestCollaborativeAndIntentGating(unittest.TestCase):
 
     def test_02_query_interpretation_adult_thematic_keywords(self):
         """Test that sex/erotic queries extract specific thematic keywords and genres."""
-        res = interpret_query_with_ai("sex heavy movies")
+        res = interpret_query("sex heavy movies")
         self.assertTrue(any(g in res.get("genres", []) for g in ["Drama", "Romance", "Thriller"]))
         thematic_kws = res.get("thematic_keywords", [])
         self.assertTrue(len(thematic_kws) > 0)
@@ -29,7 +29,7 @@ class TestCollaborativeAndIntentGating(unittest.TestCase):
 
     def test_03_thematic_relevance_gate_rejects_ddlj(self):
         """Test that Thematic Relevance Gate severely penalizes unrelated high-rated films like DDLJ."""
-        ai_analysis = interpret_query_with_ai("sex heavy movies")
+        ai_analysis = interpret_query("sex heavy movies")
         
         # Test mock candidates
         unrelated_movie = {
@@ -80,7 +80,7 @@ class TestCollaborativeAndIntentGating(unittest.TestCase):
 
     def test_05_dynamic_keyword_and_gore_rejection(self):
         """Test that dynamic keywords resolve arbitrary queries and reject unrelated blockbusters (e.g. Avengers)."""
-        ai_analysis = interpret_query_with_ai("gore movies")
+        ai_analysis = interpret_query("gore movies")
         results = analyze(
             watchedSet_titles=set(),
             watchedSet_ids=set(),
@@ -99,13 +99,13 @@ class TestCollaborativeAndIntentGating(unittest.TestCase):
 
     def test_06_upcoming_query_parsing(self):
         """Test that forward-looking terms are parsed with is_upcoming=True and year_min=2026."""
-        parsed = interpret_query_with_ai("upcoming highly anticipated movies")
+        parsed = interpret_query("upcoming highly anticipated movies")
         self.assertTrue(parsed.get('is_upcoming'))
         self.assertGreaterEqual(parsed.get('year_min', 0), 2026)
 
     def test_07_franchise_diversity_capping(self):
         """Test that franchise deduplication prevents sequels from flooding top results."""
-        ai_analysis = interpret_query_with_ai("mind boggling movies")
+        ai_analysis = interpret_query("mind boggling movies")
         results = analyze(
             watchedSet_titles=set(),
             watchedSet_ids=set(),

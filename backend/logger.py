@@ -53,7 +53,7 @@ security_logger = setup_logger('mbmr.security')
 def sanitize_data(data: Dict[str, Any]) -> Dict[str, Any]:
     """Redacts sensitive information like PINs and API keys from log records."""
     redacted = {}
-    sensitive_keys = {'pin', 'password', 'api_key', 'gemini_key', 'tmdb_key', 'encryption_key', 'session_secret', 'authorization'}
+    sensitive_keys = {'pin', 'password', 'api_key', 'tmdb_key', 'encryption_key', 'session_secret', 'authorization'}
     for k, v in data.items():
         if k.lower() in sensitive_keys:
             redacted[k] = '[REDACTED]'

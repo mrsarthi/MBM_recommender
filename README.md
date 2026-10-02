@@ -11,16 +11,16 @@
 
 > **🌐 Try the Live Web App**: **[https://mbm-recommender-nine.vercel.app/](https://mbm-recommender-nine.vercel.app/)**
 
-**MBMR (Mood-Based Movie Recommender)** is a personalized AI-powered cinema recommendation engine and modern Letterboxd companion. It learns your unique film taste using a machine learning model trained on your Letterboxd diary, interprets natural language vibes and moods with Google Gemini AI, clusters your watchlist, and predicts how much you will love any movie.
+**MBMR (Mood-Based Movie Recommender)** is a personalized AI-powered cinema recommendation engine and modern Letterboxd companion. It learns your unique film taste using a machine learning model trained on your Letterboxd diary, interprets natural language vibes and moods with a deterministic query parser, clusters your watchlist, and predicts how much you will love any movie.
 
 ---
 
 ## ✨ Features
 
-- **🧠 Two-Stage Hybrid AI Recommendation Engine**: Combines **Google Gemini AI** semantic vibe discovery with your **Local Random Forest** taste model. Gemini interprets nuanced natural language vibes grounded by your Letterboxd taste anchors (top directors, 5★ favorites, high-affinity genres), purges all movies you've already seen, and ranks candidates from highest to lowest predicted likeness.
-- **🎭 Taste-Aware Mood & Vibe Search**: Search for movie titles or natural language vibes (*"gritty 90s cyber thriller with neon aesthetics"*, *"melancholic coming-of-age on a rainy night"*). Gemini generates curated candidate films with 1-sentence **AI Vibe Pitches** explaining why each film fits your mood.
+- **🧠 Personal AI Recommendation Engine**: A **Local Random Forest** taste model, trained in memory on your Letterboxd diary, scores every candidate film. A rule-based query parser turns your prompt into genres, keywords, year/runtime/rating constraints, and director/actor filters, candidates are pulled from TMDB, films you've already seen are purged, and the rest are ranked from highest to lowest predicted likeness.
+- **🎭 Taste-Aware Mood & Vibe Search**: Search for movie titles or natural language vibes (*"gritty 90s cyber thriller with neon aesthetics"*, *"melancholic coming-of-age on a rainy night"*). Each result carries a short **Vibe Pitch** explaining why it fits your search.
 - **🚫 100% Unseen Discovery Guarantee**: Automated deduplication against your synced Letterboxd diary and ratings ensures you never waste time seeing recommendations for films you already logged.
-- **🎲 "Pick For Me Tonight" AI Matchmaker**: Tell MBMR your available time, current mood, and streaming platform. The AI picks the single best movie from your watchlist with a personalized, witty matchmaker pitch (*"Since you loved Drive and have 90 mins..."*).
+- **🎲 "Pick For Me Tonight" AI Matchmaker**: Tell MBMR your available time, current mood, and streaming platform. Your personal model picks the single best movie from your watchlist, with its predicted rating and why it fits.
 - **🔖 Intelligent Watchlist with Mood Clusters**: Organize your Letterboxd watchlist into smart clusters (*🛋️ Comfort, 🧠 Mind-Bending, 🍿 Popcorn & Adrenaline, ⏳ Quick <105m*) with streaming platform filters.
 - **📖 Visual Film Journal (Diary)**: Browse your entire watch history with high-resolution TMDB posters, dual view modes (**List View ≡** and **Poster Grid ⊞**), and rating filters.
 - **🎬 Cinema Spotlight Drawer**: Click any film to inspect its 4K backdrop, synopsis, streaming providers (Netflix, Prime, Apple TV, etc.), AI Vibe Match reason, and **Post-Watch Ripple Recommendations**.
@@ -38,8 +38,7 @@ MBMR is deployed and ready to use at:
 When you visit for the first time:
 1. The **MBMR Onboarding Wizard** will prompt you to enter your **Letterboxd Username** (`@handle`) and a 4-6 digit PIN.
 2. Enter your free **TMDB API Key** (required for posters, metadata, and cast).
-3. Optionally enter your free **Google Gemini API Key** for deep semantic mood reasoning, bespoke 1-sentence vibe pitches, and dynamic AI watchlist ranking (or leave blank to use the **In-Built Machine Learning Model Fallback**).
-4. All credentials and preferences are **stored 100% locally in your browser (IndexedDB)** — your data remains private and secure.
+3. All credentials and preferences are **stored 100% locally in your browser (IndexedDB)** — your data remains private and secure.
 
 ---
 
@@ -72,13 +71,10 @@ cp .env.example .env
 copy .env.example .env
 ```
 
-Open `.env` and add your API keys:
+Open `.env` and add your API key:
 ```env
 # TMDB API Key (Free: https://www.themoviedb.org/settings/api)
 TMDB_key=YOUR_TMDB_API_KEY_HERE
-
-# Google Gemini API Key (Free: https://aistudio.google.com/)
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
 
 # Your Letterboxd Username (Optional)
 LETTERBOXD_USERNAME=your_username
@@ -120,21 +116,16 @@ You can host your own instance of MBMR on **Render**:
 
 ---
 
-## 🔑 Obtaining Free API Keys
+## 🔑 Obtaining a Free TMDB API Key
 
-1. **TMDB API Key (The Movie Database)**:
-   - Create a free account at [themoviedb.org](https://www.themoviedb.org/).
-   - Go to **Settings → API** and generate a Developer API key.
-
-2. **Google Gemini API Key**:
-   - Go to [Google AI Studio](https://aistudio.google.com/).
-   - Click **Get API Key** and generate a free API key.
+- Create a free account at [themoviedb.org](https://www.themoviedb.org/).
+- Go to **Settings → API** and generate a Developer API key.
 
 ---
 
 ## 🧪 Running Automated Tests
 
-MBMR includes a comprehensive test suite covering API endpoints, recommendation filters, Gemini query expansion, title search, watchlist clustering, and diary poster hydration:
+MBMR includes a comprehensive test suite covering API endpoints, recommendation filters, query parsing, title search, watchlist clustering, and diary poster hydration:
 
 ```bash
 python -m unittest discover tests
@@ -149,13 +140,14 @@ MBM_recommender/
 ├── backend/
 │   ├── api.py                  # Threaded HTTP server, CORS, & REST endpoints
 │   ├── config.py               # Environment configuration & API key validation
+│   ├── in_memory_model.py      # Per-user Random Forest taste model, trained in RAM from Neon
 │   ├── feature_engineering.py  # TF-IDF, director/cast encoding, and taste feature extraction
-│   ├── query_parser.py         # Deterministic NLP query parser & semantic vibe expander
+│   ├── query_parser.py         # Deterministic NLP query parser (genres, keywords, people, constraints)
 │   ├── model_train.py          # Random Forest personal regression model training
 │   ├── predictions.py          # Real-time star rating predictions & post-watch ripples
 │   ├── recommender.py          # Multi-vector movie discovery & direct title search
-│   ├── sync_letterboxd.py      # Letterboxd RSS diary scraper & profile merger
-│   └── watchlist.py            # Watchlist scraper, mood clustering & matchmaker logic
+│   ├── jobs.py                 # Background Letterboxd sync, onboarding & CSV import jobs
+│   └── watchlist.py            # Watchlist mood clustering
 ├── frontend/
 │   ├── index.html              # Responsive mobile/desktop shell & onboarding modals
 │   ├── styles.css              # Dark-mode design system, mobile media queries, & animations

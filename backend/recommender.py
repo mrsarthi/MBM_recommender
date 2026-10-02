@@ -1,15 +1,15 @@
-import os
+import math
 import re
 import time
 import threading
 from datetime import datetime
-import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from backend.config import TMDB_KEY, TMDB_BASE_URL, PROFILE_PATH, APP_MEMORY_FILE
-from backend.predictions import predict_movie_score, predict_movie_scores_batch, get_watch_providers
+from backend.config import TMDB_KEY, TMDB_BASE_URL
+from backend.predictions import predict_movie_scores_batch, get_watch_providers
 from backend.collaborative import collaborative_engine
+from backend.query_parser import _has_positive_content
 
 class SimpleCachedSession:
     """Thread-safe in-memory cache on top of requests.Session with connection pooling and retries."""
@@ -57,42 +57,105 @@ def titleNormalize(title):
     clean = re.sub(r'\s*\(\d{4}\)$', '', clean).strip()
     return re.sub(r'[^a-z0-9]', '', clean.lower())
 
-def load_watched_data(profile_path=PROFILE_PATH, memory_path=APP_MEMORY_FILE):
-    watched_titles = set()
-    watched_ids = set()
-    hated_movies = set()
-    
-    if os.path.exists(profile_path):
-        try:
-            df = pd.read_csv(profile_path)
-            df.columns = [c.strip() for c in df.columns]
-            col_name = 'Name' if 'Name' in df.columns else 'Title'
-            
-            for _, row in df.iterrows():
-                if col_name in row and pd.notna(row[col_name]):
-                    t_norm = titleNormalize(row[col_name])
-                    watched_titles.add(t_norm)
-                    
-                    if 'movie_id' in row and pd.notna(row['movie_id']):
-                        try: watched_ids.add(int(float(row['movie_id'])))
-                        except: pass
-                        
-                    if 'Rating' in row and pd.notna(row['Rating']):
-                        try:
-                            if float(row['Rating']) <= 2.5:
-                                hated_movies.add(t_norm)
-                        except: pass
-        except Exception as e:
-            print(f"Warning reading watched profile: {e}")
-            
-    if os.path.exists(memory_path) and os.path.getsize(memory_path) > 0:
-        try:
-            mem = pd.read_csv(memory_path)
-            if 'movie_id' in mem.columns:
-                watched_ids.update(mem['movie_id'].dropna().astype(int))
-        except Exception: pass
-        
-    return watched_titles, watched_ids, hated_movies
+# ── Person Filmography Cache (LRU) ──
+_person_filmography_cache = {}
+_person_cache_lock = threading.Lock()
+_PERSON_CACHE_TTL = 604800  # 7 days
+
+
+def _get_person_filmography(name, tmdb_key):
+    """
+    Queries TMDB /search/person then /person/{id}/movie_credits with memory LRU cache.
+    Returns {'person_id': id, 'name': name, 'cast_ids': set(...), 'crew_ids': set(...), 'all_ids': set(...)}.
+    """
+    if not name or not tmdb_key:
+        return None
+
+    cache_key = (name.lower().strip(),)
+    now = time.time()
+    with _person_cache_lock:
+        if cache_key in _person_filmography_cache:
+            result, exp = _person_filmography_cache[cache_key]
+            if now < exp:
+                return result
+
+    try:
+        search_resp = http_session.get(
+            f"{TMDB_BASE_URL}/search/person",
+            params={'api_key': tmdb_key, 'query': name},
+            timeout=6
+        ).json()
+
+        if not isinstance(search_resp, dict):
+            return None
+
+        results = search_resp.get('results', [])
+        if not results:
+            return None
+
+        best = results[0]
+        person_id = best.get('id')
+        person_name = best.get('name', name)
+        if not person_id:
+            return None
+
+        credits_resp = http_session.get(
+            f"{TMDB_BASE_URL}/person/{person_id}/movie_credits",
+            params={'api_key': tmdb_key},
+            timeout=8
+        ).json()
+
+        if not isinstance(credits_resp, dict):
+            return None
+
+        cast_members = credits_resp.get('cast', [])
+        crew_members = credits_resp.get('crew', [])
+
+        cast_ids = set()
+        crew_ids = set()
+
+        for c in cast_members:
+            cid = c.get('id')
+            if cid:
+                cast_ids.add(cid)
+
+        directed_ids = set()
+        for c in crew_members:
+            cid = c.get('id')
+            if cid:
+                crew_ids.add(cid)
+                if c.get('job') == 'Director':
+                    directed_ids.add(cid)
+
+        # A director's "movies" are the ones they directed, not everything they produced
+        known_for = best.get('known_for_department') or ''
+        if known_for == 'Directing' and directed_ids:
+            signature_ids = directed_ids
+        else:
+            signature_ids = cast_ids | directed_ids
+
+        result = {
+            'person_id': person_id,
+            'name': person_name,
+            'known_for': known_for,
+            'cast_ids': cast_ids,
+            'crew_ids': crew_ids,
+            'directed_ids': directed_ids,
+            'signature_ids': signature_ids,
+            'all_ids': cast_ids | crew_ids,
+        }
+
+        with _person_cache_lock:
+            _person_filmography_cache[cache_key] = (result, now + _PERSON_CACHE_TTL)
+            if len(_person_filmography_cache) > 200:
+                oldest = sorted(_person_filmography_cache.keys(),
+                                key=lambda k: _person_filmography_cache[k][1])[:50]
+                for k in oldest:
+                    del _person_filmography_cache[k]
+
+        return result
+    except Exception:
+        return None
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -128,23 +191,318 @@ MOOD_TERMS = {
     'anticipated', 'upcoming', 'coming'
 }
 
-# Cache for TMDB keyword lookups to minimize API overhead (<0.5ms hit)
-_tmdb_keyword_cache = {}
+# ── Exclusion by TMDB tag ──
+# Plot overviews rarely say "nudity" or "gore", so exclusions are enforced against
+# TMDB's own keyword tags: server-side via without_keywords on /discover, and by
+# checking /movie/{id}/keywords for candidates from sources that can't filter.
+_exclusion_tag_cache = {}
+_movie_tag_cache = {}
+_MOVIE_TAG_CACHE_MAX = 5000
 
-def _get_tmdb_keywords(query_str, api_key):
-    query_clean = str(query_str or '').strip().lower()
-    if not query_clean or not api_key:
+
+def _get_exclusion_keyword_ids(term, api_key):
+    """TMDB keyword ids whose name contains the term as a whole word ('nudity' -> 'female nudity', ...)."""
+    term_clean = str(term or '').strip().lower()
+    if not term_clean or not api_key:
         return []
-    if query_clean in _tmdb_keyword_cache:
-        return _tmdb_keyword_cache[query_clean]
+    if term_clean in _exclusion_tag_cache:
+        return _exclusion_tag_cache[term_clean]
+    pattern = re.compile(r'\b' + re.escape(term_clean) + r'\b')
+    ids = []
     try:
-        resp = http_session.get(f"{TMDB_BASE_URL}/search/keyword", params={'api_key': api_key, 'query': query_clean}, timeout=4).json()
-        results = resp.get('results', []) if isinstance(resp, dict) else []
-        kw_ids = [str(k['id']) for k in results[:4] if 'id' in k]
-        _tmdb_keyword_cache[query_clean] = kw_ids
-        return kw_ids
+        for page in (1, 2):
+            resp = http_session.get(f"{TMDB_BASE_URL}/search/keyword",
+                                    params={'api_key': api_key, 'query': term_clean, 'page': page}, timeout=4).json()
+            if not isinstance(resp, dict):
+                break
+            for k in resp.get('results', []):
+                if k.get('id') and pattern.search(str(k.get('name', '')).lower()):
+                    ids.append(str(k['id']))
+            if page >= int(resp.get('total_pages') or 1):
+                break
+    except Exception:
+        return ids
+    _exclusion_tag_cache[term_clean] = ids
+    return ids
+
+
+def _get_movie_meta(movie_id, api_key):
+    """
+    TMDB tags and original language for a movie in one request, cached:
+    {'tag_ids': set, 'tag_names': set, 'language': str}, or None if the lookup failed.
+    """
+    if not movie_id or not api_key:
+        return None
+    if movie_id in _movie_tag_cache:
+        return _movie_tag_cache[movie_id]
+    try:
+        resp = http_session.get(f"{TMDB_BASE_URL}/movie/{movie_id}",
+                                params={'api_key': api_key, 'append_to_response': 'keywords'}, timeout=5).json()
+        if not isinstance(resp, dict) or 'id' not in resp:
+            return None
+        keywords = (resp.get('keywords') or {}).get('keywords', []) or []
+        meta = {
+            'tag_ids': {str(k['id']) for k in keywords if k.get('id')},
+            'tag_names': {_norm_tag(k.get('name')) for k in keywords if k.get('name')},
+            'language': str(resp.get('original_language') or ''),
+        }
+    except Exception:
+        return None
+    if len(_movie_tag_cache) >= _MOVIE_TAG_CACHE_MAX:
+        _movie_tag_cache.clear()
+    _movie_tag_cache[movie_id] = meta
+    return meta
+
+
+def _backfill_movie_metadata_async(known_rows, pending_ids, api_key, limit=1000):
+    """
+    Saves looked-up language/tags in a background thread, and fetches the same for
+    pending_ids (films not needed for this search) so later searches find them stored.
+    """
+    if not known_rows and not pending_ids:
+        return
+
+    def run():
+        try:
+            from backend.db import fill_movie_metadata
+            if known_rows:
+                fill_movie_metadata(known_rows)
+            pending = list(pending_ids[:limit])
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                for start in range(0, len(pending), 60):
+                    chunk = pending[start:start + 60]
+                    metas = executor.map(lambda mid: _get_movie_meta(mid, api_key), chunk)
+                    fill_movie_metadata([(mid, meta['language'], ', '.join(sorted(meta['tag_names'])))
+                                         for mid, meta in zip(chunk, metas) if meta])
+        except Exception as e:
+            print(f"[WARN] metadata backfill failed: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _get_movie_keyword_ids(movie_id, api_key):
+    """Set of TMDB keyword ids tagged on a movie, or None if the lookup failed."""
+    meta = _get_movie_meta(movie_id, api_key)
+    return meta['tag_ids'] if meta else None
+
+
+def _filter_by_excluded_tags(movies, excluded_tag_ids, api_key, want=None, batch=24):
+    """
+    Drops movies tagged with any excluded keyword id, preserving order.
+    Movies marked 'tags_checked' (already filtered by /discover) are kept as-is.
+    With want set, stops once that many survivors are found (for long ranked lists).
+    A failed lookup keeps the movie rather than emptying the results.
+    """
+    if not excluded_tag_ids or not movies:
+        return movies
+    excluded = set(excluded_tag_ids)
+    kept = []
+
+    def check(m):
+        if m.get('tags_checked'):
+            return True
+        tags = _get_movie_keyword_ids(m.get('id') or m.get('movie_id'), api_key)
+        return tags is None or not (tags & excluded)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for start in range(0, len(movies), batch):
+            chunk = movies[start:start + batch]
+            for m, ok in zip(chunk, executor.map(check, chunk)):
+                if ok:
+                    kept.append(m)
+            if want and len(kept) >= want:
+                break
+    return kept
+
+
+def _user_top_genres(username, limit=3):
+    """Genres the user rates highest, for prompts that only say what to avoid."""
+    if not username:
+        return []
+    try:
+        from backend.db import get_user_diary
+        rows, _, _ = get_user_diary(username)
     except Exception:
         return []
+    totals = {}
+    for r in rows:
+        try:
+            rating = float(r.get('rating') or r.get('Rating') or 0)
+        except (TypeError, ValueError):
+            continue
+        if rating < 3.5:
+            continue
+        for g in str(r.get('genres') or '').split(','):
+            g = g.strip()
+            if g:
+                totals[g] = totals.get(g, 0) + rating
+    return [g for g, _ in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:limit]]
+
+
+def _person_ids_for_role(person_data, role):
+    """Films that count as the person's: directed for 'director', acted in for 'actor'."""
+    if not person_data:
+        return set()
+    if role == 'director' and person_data.get('directed_ids'):
+        return person_data['directed_ids']
+    if role == 'actor' and person_data.get('cast_ids'):
+        return person_data['cast_ids']
+    return person_data.get('signature_ids') or person_data.get('all_ids') or set()
+
+
+def _person_name_matches(query_name, found_name):
+    """True when TMDB's person is the one typed: same name, or the typed words are part of it."""
+    import difflib
+    q = re.sub(r'[^a-z ]', '', str(query_name or '').lower()).split()
+    f = re.sub(r'[^a-z ]', '', str(found_name or '').lower()).split()
+    if not q or not f:
+        return False
+    if set(q) <= set(f):
+        return True
+    return difflib.SequenceMatcher(None, ' '.join(q), ' '.join(f)).ratio() >= 0.85
+
+
+# ── Search intent & relevance ──
+_exact_tag_cache = {}
+_FRAMING_WORDS = {'movies', 'movie', 'films', 'film', 'flicks', 'flick', 'something', 'anything',
+                  'recommend', 'show', 'give', 'some', 'any', 'stuff'}
+
+
+def _norm_tag(name):
+    return re.sub(r'[\s\-_]+', ' ', re.sub(r'[()]', '', str(name or '').lower())).strip()
+
+
+def _get_exact_keyword_ids(name, api_key):
+    """TMDB keyword ids whose name equals `name` (ignoring case, hyphens, plural 's')."""
+    target = _norm_tag(name)
+    if not target or not api_key:
+        return []
+    if target in _exact_tag_cache:
+        return _exact_tag_cache[target]
+    accepted = {target, target + 's', target[:-1] if target.endswith('s') else target}
+    ids = []
+    try:
+        resp = http_session.get(f"{TMDB_BASE_URL}/search/keyword",
+                                params={'api_key': api_key, 'query': name}, timeout=4).json()
+        for k in (resp.get('results', []) if isinstance(resp, dict) else []):
+            name = _norm_tag(k.get('name'))
+            # Location tags carry their country: "tokyo, japan", "paris, france"
+            if k.get('id') and (name in accepted or name.split(',')[0].strip() == target):
+                ids.append(str(k['id']))
+    except Exception:
+        return ids
+    _exact_tag_cache[target] = ids
+    return ids
+
+
+def _build_intent(analysis, query_text, api_key, excluded_tag_ids=()):
+    """
+    Structured intent for a prompt: required/preferred/avoided genres, exact TMDB tag
+    ids, overview terms, and whether any words look like part of a film title.
+    """
+    from backend.concepts import analyze_concepts, FILLER
+    from backend.query_parser import LANGUAGE_MAP
+
+    intent = analyze_concepts(query_text, excluded_genres=analysis.get('excluded_genres'))
+    # Parser-only sub-genres ("giallo", "space opera") still contribute tags; they define
+    # the theme when no concept did.
+    tag_names = list(intent['tags'])
+    core_names = list(intent['core_tags'])
+    for kw in analysis.get('thematic_keywords') or []:
+        if kw not in tag_names:
+            tag_names.append(kw)
+        if not intent['core_tags'] and kw not in core_names:
+            core_names.append(kw)
+
+    tokens = re.findall(r"[a-z0-9][a-z0-9'\-]*", (query_text or '').lower())
+    person = f"{analysis.get('person') or ''} {analysis.get('person_matched') or ''}".lower() if analysis.get('person') else ''
+    person_tokens = set(re.findall(r"[a-z0-9][a-z0-9'\-]*", person))
+    person_tokens |= {t + "'s" for t in person_tokens}
+    uncovered = [t for t in tokens
+                 if t not in FILLER and t not in intent['covered'] and t not in LANGUAGE_MAP
+                 and t not in person_tokens and not re.fullmatch(r"'?\d{2,4}'?s?", t)]
+    intent['uncovered'] = uncovered
+    intent['framed'] = any(t in _FRAMING_WORDS for t in tokens)
+
+    # Descriptive prompt with an unknown theme word ("submarine movies"): try it as a tag
+    if intent['framed']:
+        tag_names.extend(uncovered[:3])
+        core_names.extend(uncovered[:3])
+
+    def resolve(names):
+        ids = []
+        if api_key and names:
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                for found in executor.map(lambda n: _get_exact_keyword_ids(n, api_key), names[:20]):
+                    ids.extend(i for i in found if i not in ids and i not in excluded_tag_ids)
+        return ids
+
+    # Names are kept for matching locally stored tags (watchlist) without API calls
+    intent['core_tag_names'] = list(dict.fromkeys(_norm_tag(n) for n in core_names))
+    intent['tag_names'] = list(dict.fromkeys(_norm_tag(n) for n in tag_names))
+    intent['core_tag_ids'] = resolve(core_names)
+    intent['tag_ids'] = intent['core_tag_ids'] + [i for i in resolve(tag_names) if i not in intent['core_tag_ids']]
+
+    # Fall back to the parser's genre guess only when no concept was recognized
+    if not intent['genre_groups'] and not intent['soft_genres']:
+        for g in analysis.get('genres') or []:
+            intent['soft_genres'][g] = intent['soft_genres'].get(g, 0) + 1.0
+
+    # Documentaries and TV movies only belong in results when asked for
+    required = {g for group in intent['genre_groups'] for g in group}
+    for g in ('Documentary', 'TV Movie'):
+        if g not in required and g not in intent['soft_genres']:
+            intent['avoid_genres'][g] = max(intent['avoid_genres'].get(g, 0), 1.5)
+    return intent
+
+
+def _relevance(genres, text, intent, tag_hit=False, person_hit=None, ref_hit=None):
+    """
+    How well a film fits the prompt, in [0, 1], and whether it meets the required genres.
+    genres: set of genre names; text: lowercased title + overview.
+    """
+    parts = []
+    groups = intent['genre_groups']
+    hard_ok = all(genres & set(group) for group in groups)
+    if groups:
+        parts.append((1.0 if hard_ok else 0.0, 3.0))
+    soft = intent['soft_genres']
+    if soft:
+        total = sum(soft.values())
+        parts.append((sum(w for g, w in soft.items() if g in genres) / total, 2.0))
+    if intent['tag_ids'] or intent['text_terms']:
+        # tag_hit 2 = carries a theme-defining tag, 1 = only a supporting tag
+        text_hit = any(term in text for term in intent['text_terms'])
+        if tag_hit == 2 or (tag_hit and not intent['core_tag_ids']):
+            theme = 1.0
+        elif tag_hit:
+            theme = 0.6
+        else:
+            theme = 0.5 if text_hit else 0.0
+        parts.append((theme, 3.0 if intent['tag_ids'] else 1.5))
+    if person_hit is not None:
+        parts.append((1.0 if person_hit else 0.0, 4.0))
+    if ref_hit is not None:
+        parts.append((1.0 if ref_hit else 0.2, 2.0))
+
+    rel = sum(s * w for s, w in parts) / sum(w for _, w in parts) if parts else 0.6
+    avoid = max((w for g, w in intent['avoid_genres'].items() if g in genres), default=0.0)
+    rel -= 0.15 * avoid
+    return max(0.0, min(1.0, rel)), hard_ok
+
+
+def _quality(m, prefer_obscure=False, upcoming=False):
+    """Rating prior in [0, 1]: Bayesian-shrunk TMDB rating, so 9.0 from 12 votes isn't 'great'."""
+    if upcoming:
+        return min(1.0, math.log10(float(m.get('popularity') or 0) + 1) / 3)
+    votes = float(m.get('vote_count') or 0)
+    rating = float(m.get('vote_average') or 0)
+    shrunk = (votes * rating + 150 * 6.4) / (votes + 150)
+    q = max(0.0, min(1.0, (shrunk - 5.5) / 3.0))
+    if prefer_obscure and 0 < votes < 2000:
+        q = min(1.0, q + 0.15)
+    return q
+
 
 # Words carrying no signal either way; ignored when classifying and matching.
 _FILLER_TERMS = {
@@ -157,33 +515,6 @@ _FILLER_TERMS = {
     'vintage', 'recent', 'modern', 'latest', 'rated', 'acclaimed', 'masterpiece',
     'most', 'before', 'after', 'prior', 'than', 'but', 'however', 'between', 'during', 'until', 'since'
 }
-
-def _resolve_dynamic_tmdb_keywords(raw_prompt, api_key, limit=12):
-    """
-    Dynamically extracts content tokens from the prompt and queries TMDB's /search/keyword API.
-    Resolves keywords for ANY domain (e.g. 'gore', 'splatter', 'slapstick', 'existential', 'dread', 'zombie', 'paranoia').
-    """
-    if not raw_prompt or not api_key:
-        return []
-    clean = str(raw_prompt or '').lower().strip()
-    tokens = [t for t in re.split(r'[^a-z0-9\-]+', clean) if len(t) > 2 and t not in _FILLER_TERMS]
-    if not tokens:
-        return []
-
-    kw_ids = []
-    # 1. First try 2-word phrase if available (e.g. 'body horror', 'space opera', 'time travel')
-    if len(tokens) >= 2:
-        phrase_ids = _get_tmdb_keywords(' '.join(tokens[:2]), api_key)
-        kw_ids.extend(phrase_ids)
-
-    # 2. Query individual tokens
-    for tok in tokens[:4]:
-        tok_ids = _get_tmdb_keywords(tok, api_key)
-        for kid in tok_ids:
-            if kid not in kw_ids:
-                kw_ids.append(kid)
-
-    return kw_ids[:limit]
 
 def _get_franchise_key(title):
     """
@@ -264,7 +595,7 @@ def _is_strong_title_match(norm_query, norm_title):
     return False
 
 
-def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders, user_context="Alone", streaming_filter="All Platforms", raw_prompt="", source="all", username=None, tmdb_key=None, gemini_key=None):
+def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_model, ai_columns, ai_vectorizer, ai_encoders, user_context="Alone", streaming_filter="All Platforms", raw_prompt="", source="all", username=None, tmdb_key=None):
     """
     Finds candidates matching direct movie name, query/mood, or similar films,
     scores candidates using personal AI model, and returns curated recommendations.
@@ -284,6 +615,24 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
     if not active_tmdb:
         active_tmdb = TMDB_KEY or ''
 
+    # Constraints shared by the watchlist and discovery branches.
+    person = ai_analysis.get('person') if isinstance(ai_analysis, dict) else None
+    runtime_max = ai_analysis.get('runtime_max') if isinstance(ai_analysis, dict) else None
+    vote_average_min = ai_analysis.get('vote_average_min') if isinstance(ai_analysis, dict) else None
+    analysis = ai_analysis if isinstance(ai_analysis, dict) else {}
+    # The parser guesses names from capitalised word pairs ("Blade Runner"); keep the
+    # person only if TMDB knows someone by that name.
+    if person and active_tmdb:
+        person_data = _get_person_filmography(person, active_tmdb)
+        if not person_data or not _person_name_matches(person, person_data.get('name')):
+            person = None
+            analysis = dict(analysis, person=None)
+    exclusion_only = bool(analysis.get('exclusion_only'))
+    # Non-negated part of the prompt; older callers without it fall back to the raw prompt.
+    query_text = (analysis['positive_query'] if 'positive_query' in analysis else raw_prompt) or ''
+    if exclusion_only or not _has_positive_content(query_text):
+        query_text = ''
+
     genreDict = {
         'Action': 28, 'Adventure': 12, 'Animation': 16, 'Comedy': 35,
         'Crime': 80, 'Documentary': 99, 'Drama': 18, 'Family': 10751,
@@ -292,129 +641,152 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
         'TV Movie': 10770, 'Thriller': 53, 'War': 10752, 'Western': 37
     }
     idToGenre = {v: k for k, v in genreDict.items()}
+
+    excluded_tag_ids = set()
+    if active_tmdb:
+        for term in analysis.get('negated_terms', []) or []:
+            excluded_tag_ids.update(_get_exclusion_keyword_ids(term, active_tmdb))
+    excluded_genre_ids = [str(genreDict[g]) for g in (analysis.get('excluded_genres') or []) if g in genreDict]
+
+    def with_exclusions(params):
+        """Adds server-side exclusions to a /discover/movie params dict."""
+        if excluded_tag_ids:
+            params['without_keywords'] = '|'.join(sorted(excluded_tag_ids))
+        if excluded_genre_ids:
+            params['without_genres'] = '|'.join(excluded_genre_ids)
+        return params
+
+    def mark_checked(movies):
+        for m in movies:
+            m['tags_checked'] = True
+        return movies
     
     if source == "watchlist" and username:
-        from backend.db import get_user_watchlist, get_user_taste_anchors
-        from backend.query_parser import filter_and_rank_watchlist_with_ai
+        from backend.db import get_user_watchlist
+        from backend.query_parser import rank_watchlist_relevance
 
-        
         wl_movies = get_user_watchlist(username)
         if not wl_movies:
             return []
 
-        taste_anchors = None
-        try:
-            taste_anchors = get_user_taste_anchors(username)
-        except Exception:
-            pass
+        # Same intent as discovery, but tags are matched by name against the TMDB tags
+        # stored with each film, so no keyword-id lookups are needed.
+        intent = _build_intent(analysis, query_text, None, excluded_tag_ids)
+        intent['tag_ids'] = intent['tag_names']
+        intent['core_tag_ids'] = intent['core_tag_names']
+        core_names, tag_names = set(intent['core_tag_names']), set(intent['tag_names'])
+        has_intent = bool(intent['genre_groups'] or intent['soft_genres'] or tag_names or intent['text_terms'])
+        year_min, year_max = analysis.get('year_min'), analysis.get('year_max')
+        languages = analysis.get('languages', []) or []
 
-        prompt_lower = (raw_prompt or '').lower()
-        genre_keywords = {
-            'horror': 'Horror', 'scary': 'Horror', 'slasher': 'Horror',
-            'comedy': 'Comedy', 'funny': 'Comedy', 'hilarious': 'Comedy',
-            'thriller': 'Thriller', 'tense': 'Thriller', 'suspense': 'Thriller',
-            'sci-fi': 'Science Fiction', 'scifi': 'Science Fiction',
-            'action': 'Action', 'drama': 'Drama', 'romance': 'Romance',
-            'mystery': 'Mystery', 'crime': 'Crime', 'animation': 'Animation',
-            'fantasy': 'Fantasy', 'western': 'Western', 'documentary': 'Documentary'
-        }
-        explicit_target_genres = {g for kw, g in genre_keywords.items() if kw in prompt_lower}
-        # Merge genres from ai_analysis and raw prompt
-        if ai_analysis and isinstance(ai_analysis, dict):
-            for g in ai_analysis.get('genres', []):
-                if g: explicit_target_genres.add(g)
+        def tag_hit_for(names):
+            names = {n.split(',')[0].strip() for n in names} | set(names)
+            return 2 if names & core_names else (1 if names & tag_names else 0)
 
-        ai_matches = filter_and_rank_watchlist_with_ai(
-            raw_prompt, wl_movies, custom_api_key=gemini_key, taste_context=taste_anchors
-        )
-
-        hated_set = {titleNormalize(h) for h in hated_movies if h}
+        # Free-text matching for words no concept explains ("lighthouse", a director's surname)
+        ai_matches = rank_watchlist_relevance(raw_prompt, wl_movies)
         raw_scores = predict_movie_scores_batch(
             ai_model, ai_columns, ai_vectorizer, ai_encoders,
             wl_movies, context=user_context
         ) if ai_model else [3.8] * len(wl_movies)
-
-        search_query_text = (ai_analysis.get('search_query', '') if isinstance(ai_analysis, dict) else '') or ''
-        combined_query_text = f"{prompt_lower} {search_query_text.lower()}"
-
-        synonym_groups = {
-            'weird': ['weird', 'surreal', 'bizarre', 'strange', 'mutant', 'unconventional', 'psychedelic', 'cult', 'absurd', 'grotesque', 'insane'],
-            'scary': ['scary', 'spooky', 'terrifying', 'slasher', 'haunting', 'paranormal', 'creepy'],
-            'funny': ['funny', 'comedy', 'hilarious', 'humor', 'satire', 'spoof', 'wit'],
-            'niche': ['niche', 'indie', 'arthouse', 'obscure', 'gem', 'underground', 'cult'],
-            'epic': ['epic', 'universe', 'multiverse', 'adventure', 'monumental', 'grand']
-        }
+        hated_set = {titleNormalize(h) for h in hated_movies if h}
 
         candidates = []
         for idx, m in enumerate(wl_movies):
             m_id = int(m.get('movie_id') or m.get('id') or 0)
-            m_genres = [g.strip() for g in str(m.get('genres', '')).split(',') if g.strip()]
-            m_overview = str(m.get('overview', '')).lower()
-            m_title = str(m.get('title', ''))
-            m_norm_title = titleNormalize(m_title)
+            year = str(m.get('year') or '').replace('.0', '')[:4]
+            if year.isdigit() and ((year_min and int(year) < year_min) or (year_max and int(year) > year_max)):
+                continue
+            try:
+                m_runtime = int(m.get('runtime') or 0)
+            except (ValueError, TypeError):
+                m_runtime = 0
+            if runtime_max and m_runtime and m_runtime > runtime_max:
+                continue
+            m_vote = float(m.get('vote_average') or 0)
+            if vote_average_min and m_vote and m_vote < vote_average_min:
+                continue
 
-            # Retrieve AI thematic match data
+            genres = {g.strip() for g in str(m.get('genres', '')).split(',') if g.strip()}
+            text = f"{str(m.get('title', '')).lower()} {str(m.get('overview', '')).lower()}"
+            stored_tags = {_norm_tag(t) for t in str(m.get('keywords') or '').split(',') if t.strip()}
+
             match_data = ai_matches.get(m_id)
-            if match_data:
-                thematic_rel = match_data.get('relevance', 0.6)
-                vibe_pitch = match_data.get('vibe_pitch', '')
+            token_rel = match_data.get('relevance', 0.6) if match_data else (0.15 if ai_matches else 0.5)
+
+            if has_intent:
+                rel, hard_ok = _relevance(genres, text, intent, tag_hit=tag_hit_for(stored_tags))
+                rel = 0.75 * rel + 0.25 * token_rel
             else:
-                thematic_rel = 0.15 if ai_matches else 0.50
-                vibe_pitch = ''
+                rel, hard_ok = token_rel, True
 
-            # Concept intersection matching
-            concept_hits = 0
-            for c_key, c_terms in synonym_groups.items():
-                if any(t in combined_query_text for t in c_terms):
-                    if any(t in m_overview or t in m_title.lower() or any(t in g.lower() for g in m_genres) for t in c_terms):
-                        concept_hits += 1
-
-            # Genre intersection
-            genre_hits = 0
-            if explicit_target_genres:
-                m_genres_lower = [g.lower() for g in m_genres]
-                genre_hits = sum(1 for tg in explicit_target_genres if tg.lower() in m_genres_lower)
-                if genre_hits > 0:
-                    thematic_rel = min(1.0, thematic_rel + 0.20 * genre_hits)
-                else:
-                    thematic_rel = max(0.05, thematic_rel - 0.40)
-
-            base_score = raw_scores[idx]
-            # Exact title equality check (fixes hated-movie substring penalty bug on 'Up' vs 'Upgrade')
-            if m_norm_title in hated_set:
-                base_score = max(0.5, base_score - 2.5)
-
-            multiplier = 0.30 + (0.75 * thematic_rel)
-            if thematic_rel >= 0.85:
-                multiplier += 0.10
-            final_ai_score = round(min(5.0, max(0.5, base_score * multiplier)), 2)
-
-            # Multi-concept specificity boost
-            concept_bonus = (concept_hits * 0.15) + (genre_hits * 0.10)
-
-            # Unified rank score
-            rank_score = (thematic_rel * 0.50) + ((final_ai_score / 5.0) * 0.30) + concept_bonus
+            predicted = raw_scores[idx]
+            if titleNormalize(m.get('title', '')) in hated_set:
+                predicted = max(0.5, predicted - 2.5)
 
             m_copy = dict(m)
-            m_copy['id'] = m_id
-            m_copy['movie_id'] = m_id
-            m_copy['ai_score'] = final_ai_score
-            m_copy['rank_score'] = round(rank_score, 4)
-            m_copy['thematic_relevance'] = thematic_rel
-            m_copy['vibe_pitch'] = vibe_pitch
-            m_copy['is_direct_match'] = thematic_rel >= 0.80
-            m_copy['is_watched'] = False
+            m_copy.pop('keywords', None)
+            m_copy.update({
+                'id': m_id, 'movie_id': m_id, 'is_watched': False,
+                'vibe_pitch': match_data.get('vibe_pitch', '') if match_data else '',
+                'relevance': rel, 'hard_ok': hard_ok, 'predicted_rating': round(predicted, 2),
+                'has_stored_tags': bool(stored_tags), '_genres': genres, '_text': text,
+            })
+            candidates.append(m_copy)
 
-            if not ai_matches or thematic_rel >= 0.30:
-                candidates.append(m_copy)
+        def rank_of(m):
+            q = max(0.0, min(1.0, (float(m.get('vote_average') or 6.4) - 5.5) / 3.0))
+            pred_n = max(0.0, min(1.0, (m['predicted_rating'] - 1.0) / 4.0))
+            rank = 0.55 * m['relevance'] + 0.30 * pred_n + 0.15 * q
+            return rank * (1.0 if m['hard_ok'] else 0.4)
 
-        if not candidates:
-            for m in wl_movies:
-                m_copy = dict(m)
-                m_copy['id'] = m.get('movie_id')
-                m_copy['ai_score'] = 3.5
-                m_copy['rank_score'] = 0.5
-                candidates.append(m_copy)
+        candidates.sort(key=rank_of, reverse=True)
+
+        # Language and tags are stored with each film. Films synced before they were
+        # stored are looked up on TMDB (leading candidates now, the rest in the
+        # background) and written back, so each film is fetched only once.
+        def missing_meta(m):
+            return (languages and not m.get('original_language')) or (tag_names and not m['has_stored_tags'])
+
+        need_meta = [m for m in candidates[:150] if missing_meta(m)]
+        rest = [m['id'] for m in candidates[150:] if missing_meta(m)]
+        if (need_meta or rest) and active_tmdb:
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                metas = list(executor.map(lambda m: _get_movie_meta(m['id'], active_tmdb), need_meta))
+            backfill = []
+            for m, meta in zip(need_meta, metas):
+                if not meta:
+                    continue
+                m['original_language'] = m.get('original_language') or meta['language']
+                if tag_names and not m['has_stored_tags']:
+                    rel, _ = _relevance(m['_genres'], m['_text'], intent, tag_hit=tag_hit_for(meta['tag_names']))
+                    m['relevance'] = max(m['relevance'], 0.75 * rel + 0.25 * m['relevance'])
+                backfill.append((m['id'], meta['language'], ', '.join(sorted(meta['tag_names']))))
+            _backfill_movie_metadata_async(backfill, rest, active_tmdb)
+            candidates.sort(key=rank_of, reverse=True)
+
+        if languages:
+            # Films whose language is still unknown can't be confirmed, so they're left out
+            candidates = [m for m in candidates if m.get('original_language') in languages]
+
+        for m in candidates:
+            rank = rank_of(m)
+            m['rank_score'] = round(rank, 4)
+            m['ai_score'] = round(max(0.5, min(5.0, 1.0 + 4.0 * rank)), 2)
+            m['is_direct_match'] = m['relevance'] >= 0.85 and m['hard_ok']
+            for key in ('_genres', '_text', 'hard_ok', 'has_stored_tags'):
+                m.pop(key, None)
+
+        # Person entity filtering (director/actor): their own films, falling back to the
+        # director field when TMDB credits are unavailable
+        if person and active_tmdb:
+            person_data = _get_person_filmography(person, active_tmdb)
+            person_ids = _person_ids_for_role(person_data, analysis.get('person_role'))
+            person_surname = person.lower().split()[-1]
+            person_candidates = [m for m in candidates
+                                 if m['id'] in person_ids or person_surname in str(m.get('director', '')).lower()]
+            if person_candidates:
+                candidates = person_candidates
 
         if streaming_filter != "All Platforms":
             def check_stream(m):
@@ -427,36 +799,92 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             with ThreadPoolExecutor(max_workers=8) as executor:
                 candidates = [m for m in executor.map(check_stream, candidates) if m]
 
-        candidates.sort(key=lambda x: x.get('rank_score', 0), reverse=True)
-        return candidates
+        return _filter_by_excluded_tags(candidates, excluded_tag_ids, active_tmdb, want=40)
 
     direct_matches = []
     results = []
     seen_ids = set()
-    
-    clean_raw = raw_prompt.strip() if raw_prompt else ''
+
+    clean_raw = query_text.strip()
     norm_raw = titleNormalize(clean_raw)
+
+    year_min = analysis.get('year_min')
+    year_max = analysis.get('year_max')
+    languages = analysis.get('languages', []) or []
+    lang_param = "|".join(languages) if languages else None
+    is_upcoming = bool(analysis.get('is_upcoming'))
+    ref_entity = analysis.get('reference_entity')
+
+    intent = _build_intent(analysis, clean_raw, active_tmdb, excluded_tag_ids)
+    # Every meaningful word is explained by a genre/theme/year/language/person, so the
+    # prompt describes films rather than naming one ("christmas movies", "musicals").
+    concept_query = bool(clean_raw) and not intent['uncovered']
+
+    def add(m, **flags):
+        m_id = m.get('id')
+        if not m_id or m_id in seen_ids:
+            return False
+        seen_ids.add(m_id)
+        m.update(flags)
+        results.append(m)
+        return True
+
+    def apply_common(params):
+        if lang_param:
+            params['with_original_language'] = lang_param
+        if year_min:
+            params['primary_release_date.gte'] = f"{year_min}-01-01"
+        if year_max:
+            params['primary_release_date.lte'] = f"{year_max}-12-31"
+        if vote_average_min:
+            params['vote_average.gte'] = max(float(params.get('vote_average.gte', 0)), vote_average_min)
+            params['vote_count.gte'] = max(int(params.get('vote_count.gte', 0)), 300)
+        if runtime_max:
+            params['with_runtime.lte'] = runtime_max
+        return with_exclusions(params)
+
+    def discover(params):
+        try:
+            resp = http_session.get(f"{TMDB_BASE_URL}/discover/movie", params=apply_common(dict(params)), timeout=6)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            return mark_checked(data.get('results', []) if isinstance(data, dict) else [])
+        except Exception:
+            return []
+
+    # 0. A title starting with a negation word ("No Time to Die", "Without a Paddle")
+    # is parsed as an exclusion; an exact title match on the full prompt wins over that.
+    raw_title = (raw_prompt or '').strip()
+    if active_tmdb and analysis.get('negated_terms') and raw_title and len(raw_title.split()) <= 6:
+        norm_full = titleNormalize(raw_title)
+        try:
+            resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': raw_title}, timeout=6).json()
+            for m in (resp.get('results', []) if isinstance(resp, dict) else [])[:10]:
+                m_id = m.get('id')
+                m_norm = titleNormalize(m.get('title') or m.get('original_title') or '')
+                if m_id and m_id not in seen_ids and _is_strong_title_match(norm_full, m_norm):
+                    seen_ids.add(m_id)
+                    m['is_direct_match'] = True
+                    m['exact_title_request'] = True
+                    m['tags_checked'] = True
+                    if (m_norm in watchedSet_titles) or (m_id in watchedSet_ids):
+                        m['is_watched'] = True
+                    direct_matches.append(m)
+        except Exception:
+            pass
 
     # 1. Title search on TMDB.
     #
-    # Both this and the mood/genre discovery below always run, so "Blade Runner" and
-    # "melancholic rainy-night sci-fi" both work. The difference is ranking: only a
-    # genuine title match gets pinned to the top as a direct match.
+    # A prompt made only of genre/theme words ("christmas movies") describes films, so a
+    # title search would only surface specials literally named "Christmas Movie". A bare
+    # concept word with no framing ("Alien", "Heat") may still be a title: search it,
+    # but only accept a well-known exact match.
     is_mood = looks_like_mood_query(clean_raw)
-
-    # For a pure vibe query, a title search only contributes films that happen to share
-    # the mood word as a name (searching "thriller" surfacing the film *Thriller*).
-    # Genre discovery below is the right source for those, so skip the title pass.
-    if clean_raw and not is_mood and active_tmdb:
-        search_queries = [clean_raw]
-        # Singular/plural retry helps real titles, but on a mood word it only drags in
-        # more same-named films, so only do it when the query looks like a title.
-        if not is_mood:
-            if clean_raw.endswith('s'):
-                search_queries.append(clean_raw[:-1])
-            else:
-                search_queries.append(clean_raw + 's')
-
+    bare_concept = concept_query and not intent['framed']
+    title_search = bool(clean_raw) and active_tmdb and (bare_concept or not is_mood) and not (concept_query and intent['framed'])
+    if title_search:
+        search_queries = [clean_raw, clean_raw[:-1] if clean_raw.endswith('s') else clean_raw + 's']
         for q in search_queries:
             try:
                 resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': q}, timeout=6).json()
@@ -469,18 +897,21 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
                     m_id = m.get('id')
                     if not m_id or m_id in seen_ids:
                         continue
-                    seen_ids.add(m_id)
-                    m_title = m.get('title') or m.get('name') or m.get('original_title') or ''
-                    m_norm = titleNormalize(m_title)
-
-                    if (not is_mood) and _is_strong_title_match(norm_raw, m_norm):
+                    m_norm = titleNormalize(m.get('title') or m.get('name') or m.get('original_title') or '')
+                    strong = _is_strong_title_match(norm_raw, m_norm)
+                    # "Alien" is a famous film; "War" or "Horror" titles are obscure noise
+                    if strong and concept_query and int(m.get('vote_count') or 0) < 1000:
+                        strong = False
+                    if strong:
+                        seen_ids.add(m_id)
                         m['is_direct_match'] = True
                         if (m_norm in watchedSet_titles) or (m_id in watchedSet_ids):
                             m['is_watched'] = True
                         direct_matches.append(m)
-                    else:
-                        results.append(m)
-            except Exception: pass
+                    elif not concept_query:
+                        add(m)
+            except Exception:
+                pass
 
         # Exact title equality first, then popularity.
         direct_matches.sort(key=lambda x: (
@@ -495,224 +926,117 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             try:
                 r_resp = http_session.get(f"{TMDB_BASE_URL}/movie/{top_id}/recommendations", params={'api_key': active_tmdb}, timeout=5).json()
                 for rm in r_resp.get('results', [])[:10]:
-                    if rm.get('id') and rm.get('id') not in seen_ids:
-                        seen_ids.add(rm.get('id'))
-                        rm['thematic_match'] = True
-                        rm['thematic_weight'] = 1.08
-                        results.append(rm)
-            except Exception: pass
-
-    # 2. Semantic Suggested Titles (concurrent lookup with high thematic priority & ripple expansion)
-    suggested_titles = ai_analysis.get('suggested_titles', []) if isinstance(ai_analysis, dict) else []
-    seed_movie_ids = []
-    if suggested_titles and active_tmdb:
-        def fetch_title(item):
-            if isinstance(item, dict):
-                t = item.get('title', '')
-                year_hint = item.get('year', '')
-                pitch = item.get('vibe_pitch', '')
-            else:
-                t = str(item)
-                year_hint = ''
-                pitch = ''
-            if not t:
-                return None
-
-            try:
-                params = {'api_key': active_tmdb, 'query': t}
-                if year_hint and str(year_hint).isdigit() and len(str(year_hint)) == 4:
-                    params['year'] = year_hint
-                resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=5).json()
-                m_list = resp.get('results', []) if isinstance(resp, dict) else []
-                if not m_list and 'year' in params:
-                    # Retry without year restriction in case year slightly differs
-                    resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': t}, timeout=5).json()
-                    m_list = resp.get('results', []) if isinstance(resp, dict) else []
-
-                if m_list:
-                    m = m_list[0]
-                    m['thematic_match'] = True
-                    m['thematic_weight'] = 1.15
-                    if pitch:
-                        m['vibe_pitch'] = pitch
-                    return m
-                return None
+                    add(rm, ref_ripple=True)
             except Exception:
-                return None
-            
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            for res in executor.map(fetch_title, suggested_titles):
-                if res and res.get('id') and res.get('id') not in seen_ids:
-                    seen_ids.add(res.get('id'))
-                    seed_movie_ids.append(res.get('id'))
-                    results.append(res)
+                pass
 
-        # Ripple Expansion on Top Seeds (Expands curated pool with lookalike cinephile gems)
-        if seed_movie_ids:
-            def fetch_ripple(seed_id):
-                try:
-                    r_resp = http_session.get(f"{TMDB_BASE_URL}/movie/{seed_id}/recommendations", params={'api_key': active_tmdb}, timeout=5).json()
-                    return r_resp.get('results', [])[:6] if isinstance(r_resp, dict) else []
-                except Exception:
-                    return []
-
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                for ripple_list in executor.map(fetch_ripple, seed_movie_ids[:4]):
-                    for rm in ripple_list:
-                        if rm.get('id') and rm.get('id') not in seen_ids:
-                            seen_ids.add(rm.get('id'))
-                            rm['thematic_match'] = True
-                            rm['thematic_weight'] = 1.06
-                            results.append(rm)
-
-    # 3. Deterministic Reference Entity Lookup & Ripple (Zero-AI Fallback & Expansion)
-    ref_entity = ai_analysis.get('reference_entity') if isinstance(ai_analysis, dict) else None
-    if ref_entity and active_tmdb and len(results) < 30:
+    # 2. Reference entity ("something like X"): the film plus TMDB's recommendations for it
+    if ref_entity and active_tmdb:
         try:
             resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params={'api_key': active_tmdb, 'query': ref_entity}, timeout=5).json()
             ref_matches = resp.get('results', []) if isinstance(resp, dict) else []
             if ref_matches:
                 top_ref = ref_matches[0]
                 top_ref_id = top_ref.get('id')
-                if top_ref_id and top_ref_id not in seen_ids:
-                    seen_ids.add(top_ref_id)
-                    top_ref['thematic_match'] = True
-                    top_ref['thematic_weight'] = 1.12
-                    results.append(top_ref)
-
-                # Pull TMDB recommendations for reference film
-                r_resp = http_session.get(f"{TMDB_BASE_URL}/movie/{top_ref_id}/recommendations", params={'api_key': active_tmdb}, timeout=5).json()
-                for rm in r_resp.get('results', [])[:12]:
-                    if rm.get('id') and rm.get('id') not in seen_ids:
-                        seen_ids.add(rm.get('id'))
-                        rm['thematic_match'] = True
-                        rm['thematic_weight'] = 1.08
-                        results.append(rm)
-        except Exception: pass
-
-    year_min = ai_analysis.get('year_min') if isinstance(ai_analysis, dict) else None
-    year_max = ai_analysis.get('year_max') if isinstance(ai_analysis, dict) else None
-    languages = ai_analysis.get('languages', []) if isinstance(ai_analysis, dict) else []
-    lang_param = "|".join(languages) if languages else None
-
-    # 4. TMDB Keyword-Constrained Dynamic Thematic Discovery
-    search_query = (ai_analysis.get('search_query') or clean_raw or '').strip()
-    is_upcoming = ai_analysis.get('is_upcoming', False) if isinstance(ai_analysis, dict) else False
-    kw_ids = []
-    if active_tmdb:
-        # Dynamically resolve keyword IDs for prompt content tokens (e.g. 'gore', 'slapstick', 'existential')
-        kw_ids = _resolve_dynamic_tmdb_keywords(clean_raw, active_tmdb)
-        if search_query and search_query != clean_raw:
-            extra_query_ids = _resolve_dynamic_tmdb_keywords(search_query, active_tmdb)
-            for eqid in extra_query_ids:
-                if eqid not in kw_ids:
-                    kw_ids.append(eqid)
-
-    # If user explicitly asked for upcoming / unreleased films, query upcoming discover
-    if is_upcoming and active_tmdb:
-        try:
-            today_str = datetime.now().strftime('%Y-%m-%d')
-            # 1. Fetch official TMDB upcoming theatrical list (highest anticipation)
-            try:
-                up_resp = http_session.get(f"{TMDB_BASE_URL}/movie/upcoming", params={'api_key': active_tmdb, 'page': 1}, timeout=5).json()
-                up_matches = up_resp.get('results', []) if isinstance(up_resp, dict) else []
-                for m in up_matches:
-                    if m.get('id') and m.get('id') not in seen_ids:
-                        seen_ids.add(m.get('id'))
-                        m['thematic_match'] = True
-                        m['thematic_weight'] = 1.30
-                        results.append(m)
-            except Exception:
-                pass
-
-            # 2. Discover upcoming movies sorted strictly by popularity
-            disc_params = {
-                'api_key': active_tmdb,
-                'primary_release_date.gte': today_str,
-                'sort_by': 'popularity.desc',
-                'page': 1
-            }
-            if lang_param:
-                disc_params['with_original_language'] = lang_param
-            resp = http_session.get(f"{TMDB_BASE_URL}/discover/movie", params=disc_params, timeout=6).json()
-            matches = resp.get('results', []) if isinstance(resp, dict) else []
-            for m in matches[:25]:
-                if m.get('id') and m.get('id') not in seen_ids:
-                    seen_ids.add(m.get('id'))
-                    m['thematic_match'] = True
-                    m['thematic_weight'] = 1.20
-                    results.append(m)
+                add(top_ref, ref_ripple=True)
+                for page in (1, 2):
+                    r_resp = http_session.get(f"{TMDB_BASE_URL}/movie/{top_ref_id}/recommendations",
+                                              params={'api_key': active_tmdb, 'page': page}, timeout=5).json()
+                    for rm in r_resp.get('results', []):
+                        add(rm, ref_ripple=True)
         except Exception:
             pass
 
-    # Check for compound keyword requirements (e.g. gore AND nudity)
-    compound_groups = ai_analysis.get('compound_keyword_groups', []) if isinstance(ai_analysis, dict) else []
+    # 3. Person discovery (director / actor)
+    person_data = _get_person_filmography(person, active_tmdb) if (person and active_tmdb) else None
+    person_ids = _person_ids_for_role(person_data, analysis.get('person_role'))
+    if person_data and person_data.get('person_id'):
+        base = {'api_key': active_tmdb, 'with_people': person_data['person_id']}
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            pages = list(executor.map(discover, [dict(base, sort_by='popularity.desc', page=1),
+                                                 dict(base, sort_by='vote_count.desc', page=1)]))
+        for page_results in pages:
+            for m in page_results:
+                add(m, person_match=person)
+
+    # 4. Upcoming releases
+    if is_upcoming and active_tmdb:
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        try:
+            up_resp = http_session.get(f"{TMDB_BASE_URL}/movie/upcoming", params={'api_key': active_tmdb, 'page': 1}, timeout=5).json()
+            for m in (up_resp.get('results', []) if isinstance(up_resp, dict) else []):
+                add(m)
+        except Exception:
+            pass
+        for m in discover({'api_key': active_tmdb, 'primary_release_date.gte': today_str,
+                           'sort_by': 'popularity.desc', 'page': 1})[:25]:
+            add(m)
+
+    # 5. Theme and genre discovery.
+    # Required genres are ANDed (comma); a group with alternatives contributes its first
+    # (most typical) genre. Tags are exact TMDB keyword ids, ORed.
+    groups = intent['genre_groups']
+    hard_genre_ids = [str(genreDict[g[0]]) for g in groups if g and g[0] in genreDict]
+    with_genres = ",".join(dict.fromkeys(hard_genre_ids))
+    if not with_genres and intent['soft_genres']:
+        top_soft = sorted(intent['soft_genres'].items(), key=lambda kv: -kv[1])[:2]
+        with_genres = "|".join(str(genreDict[g]) for g, _ in top_soft if g in genreDict)
+    # A prompt that only says what to avoid ("movies without nudity") has nothing to
+    # search for, so fall back to the genres this user rates highest.
+    if exclusion_only and not with_genres:
+        with_genres = "|".join(str(genreDict[g]) for g in _user_top_genres(username) if g in genreDict)
+
+    # Combined theme requests ("gore and nudity"): every group must be tagged (comma = AND)
+    compound_groups = analysis.get('compound_keyword_groups', []) or []
     compound_kw_param = None
     if compound_groups and active_tmdb:
-        group_id_strings = []
+        group_strings = []
         for grp in compound_groups:
-            grp_ids = []
+            ids = []
             for term in grp:
-                for kid in _get_tmdb_keywords(term, active_tmdb):
-                    if kid not in grp_ids:
-                        grp_ids.append(kid)
-            if grp_ids:
-                group_id_strings.append("|".join(grp_ids[:4]))
-        if len(group_id_strings) >= 2:
-            # In TMDB discover, comma means AND: (g1_kw1|g1_kw2),(g2_kw1|g2_kw2)
-            compound_kw_param = ",".join(group_id_strings)
+                ids.extend(i for i in _get_exact_keyword_ids(term, active_tmdb) if i not in ids)
+            if ids:
+                group_strings.append("|".join(ids[:6]))
+        if len(group_strings) >= 2:
+            compound_kw_param = ",".join(group_strings)
 
-    # Also check any explicit thematic_keywords if available
-    thematic_kws = ai_analysis.get('thematic_keywords', []) if isinstance(ai_analysis, dict) else []
-    for t_kw in thematic_kws[:4]:
-        extra_ids = _get_tmdb_keywords(t_kw, active_tmdb)
-        for eid in extra_ids:
-            if eid not in kw_ids:
-                kw_ids.append(eid)
+    jobs = []
+    tag_queries = []
+    if compound_kw_param:
+        tag_queries.append((compound_kw_param, {'tag_hit': 2, 'compound_match': True}))
+    elif intent['core_tag_ids']:
+        tag_queries.append(("|".join(intent['core_tag_ids'][:20]), {'tag_hit': 2}))
+    supporting = [i for i in intent['tag_ids'] if i not in intent['core_tag_ids']]
+    if supporting and not compound_kw_param:
+        tag_queries.append(("|".join(supporting[:20]), {'tag_hit': 1}))
+    for kw_param, flags in tag_queries if active_tmdb else []:
+        kw_base = {'api_key': active_tmdb, 'with_keywords': kw_param, 'vote_count.gte': 10}
+        if hard_genre_ids:
+            kw_base['with_genres'] = ",".join(dict.fromkeys(hard_genre_ids))
+        sorts = (('popularity.desc', 1), ('popularity.desc', 2), ('vote_count.desc', 1)) if flags['tag_hit'] == 2             else (('popularity.desc', 1), ('vote_count.desc', 1))
+        for sort, page in sorts:
+            jobs.append((dict(kw_base, sort_by=sort, page=page), flags))
+    if active_tmdb and (with_genres or exclusion_only):
+        g_base = {'api_key': active_tmdb, 'vote_count.gte': 50, 'vote_average.gte': 5.8}
+        if with_genres:
+            g_base['with_genres'] = with_genres
+        else:
+            g_base['vote_count.gte'] = 300
+        for sort, page in (('popularity.desc', 1), ('vote_count.desc', 1), ('vote_average.desc', 1)):
+            params = dict(g_base, sort_by=sort, page=page)
+            if sort == 'vote_average.desc':
+                params['vote_count.gte'] = max(params['vote_count.gte'], 500)
+            jobs.append((params, {}))
+    if jobs:
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            pages = list(executor.map(lambda job: discover(job[0]), jobs))
+        for (params, flags), page_results in zip(jobs, pages):
+            for m in page_results:
+                add(m, **flags)
 
-    desired_genres = ai_analysis.get('genres', []) if isinstance(ai_analysis, dict) else []
-    target_genre_ids = [str(genreDict[name]) for name in desired_genres if name in genreDict]
-
-    if (kw_ids or compound_kw_param) and active_tmdb and len(results) < 35:
-        def fetch_kw_discover_page(page):
-            try:
-                params = {
-                    'api_key': active_tmdb,
-                    'with_keywords': compound_kw_param if compound_kw_param else "|".join(kw_ids[:8]),
-                    'vote_count.gte': 5 if compound_kw_param else 20,
-                    'vote_average.gte': 4.5 if compound_kw_param else 6.0,
-                    'sort_by': 'vote_average.desc' if (year_max or languages) else 'popularity.desc',
-                    'page': page
-                }
-                if target_genre_ids and not compound_kw_param:
-                    params['with_genres'] = "|".join(str(gid) for gid in target_genre_ids)
-                if lang_param:
-                    params['with_original_language'] = lang_param
-                if year_min:
-                    params['primary_release_date.gte'] = f"{year_min}-01-01"
-                if year_max:
-                    params['primary_release_date.lte'] = f"{year_max}-12-31"
-                resp = http_session.get(f"{TMDB_BASE_URL}/discover/movie", params=params, timeout=6)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data.get('results', []) if isinstance(data, dict) else []
-                return []
-            except Exception:
-                return []
-
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            for page_results in executor.map(fetch_kw_discover_page, (1, 2)):
-                for m in page_results:
-                    if m.get('id') and m.get('id') not in seen_ids:
-                        seen_ids.add(m.get('id'))
-                        m['thematic_match'] = True
-                        m['thematic_weight'] = 1.25 if compound_kw_param else 1.08
-                        if compound_kw_param:
-                            m['compound_match'] = True
-                        results.append(m)
-
-    # 5. Search Query / Theme Fallback
-    if search_query and search_query != clean_raw and active_tmdb and len(results) < 20:
+    # 6. Free-text fallback for prompts that aren't fully understood ("films set in a lighthouse")
+    search_query = (analysis.get('search_query') or '').strip()
+    if search_query and search_query != clean_raw and not concept_query and active_tmdb and len(results) < 20:
         try:
             params = {'api_key': active_tmdb, 'query': search_query}
             if year_min and not year_max:
@@ -720,57 +1044,19 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
             elif year_max and not year_min:
                 params['primary_release_year'] = year_max
             resp = http_session.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=6).json()
-            matches = resp.get('results', []) if isinstance(resp, dict) else []
-            for m in matches[:10]:
-                if m.get('id') and m.get('id') not in seen_ids:
-                    seen_ids.add(m.get('id'))
-                    results.append(m)
-        except Exception: pass
-
-    # 6. Discover by Genres (Fallback when thematic pool is still small, strictly quality-filtered)
-    desiredGenres = ai_analysis.get('genres', [])
-    if desiredGenres and active_tmdb and len(results) < 25:
-        targetGenreIds = [str(genreDict[name]) for name in desiredGenres if name in genreDict]
-        if targetGenreIds:
-            genreIdString = "|".join(targetGenreIds)
-            discoverUrl = f"{TMDB_BASE_URL}/discover/movie"
-            discoverParams = {
-                'api_key': active_tmdb, 'with_genres': genreIdString,
-                'vote_average.gte': 6.4, 'vote_count.gte': 30, 
-                'sort_by': 'vote_average.desc' if (year_max or languages) else 'popularity.desc',
-                'page': 1
-            }
-            if lang_param:
-                discoverParams['with_original_language'] = lang_param
-            if year_min:
-                discoverParams['primary_release_date.gte'] = f"{year_min}-01-01"
-            if year_max:
-                discoverParams['primary_release_date.lte'] = f"{year_max}-12-31"
-
-            def fetch_discover_page(page):
-                try:
-                    params = dict(discoverParams, page=page)
-                    resp = http_session.get(discoverUrl, params=params, timeout=6)
-                    if resp.status_code != 200:
-                        return []
-                    data = resp.json()
-                    return data.get('results', []) if isinstance(data, dict) else []
-                except Exception:
-                    return []
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                for page_results in executor.map(fetch_discover_page, (1, 2)):
-                    for m in page_results:
-                        if m.get('id') and m.get('id') not in seen_ids:
-                            seen_ids.add(m.get('id'))
-                            results.append(m)
+            for m in (resp.get('results', []) if isinstance(resp, dict) else [])[:10]:
+                add(m)
+        except Exception:
+            pass
 
     # Filter recommendations: enforce unwatched, language, year bounds, and negations
-    excluded_genres = ai_analysis.get('excluded_genres', []) if isinstance(ai_analysis, dict) else []
-    excluded_keywords = ai_analysis.get('excluded_keywords', []) if isinstance(ai_analysis, dict) else []
-    thematic_kws = [k.lower() for k in (ai_analysis.get('thematic_keywords', []) if isinstance(ai_analysis, dict) else [])]
+    excluded_genres = analysis.get('excluded_genres', []) or []
+    excluded_keywords = analysis.get('excluded_keywords', []) or []
 
     def _passes_filters(m):
+        # The whole prompt is this film's title; constraints parsed from it don't apply
+        if m.get('exact_title_request'):
+            return True
         rel_date = str(m.get('release_date') or m.get('year') or '')
         if rel_date and len(rel_date) >= 4 and rel_date[:4].isdigit():
             myear = int(rel_date[:4])
@@ -781,6 +1067,20 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
         if languages:
             m_lang = (m.get('original_language') or '').lower()
             if m_lang and m_lang not in languages:
+                return False
+
+        if runtime_max:
+            m_runtime = m.get('runtime') or 0
+            try:
+                m_runtime = int(m_runtime)
+            except (ValueError, TypeError):
+                m_runtime = 0
+            if m_runtime and m_runtime > 0 and m_runtime > runtime_max:
+                return False
+
+        if vote_average_min:
+            m_vote = float(m.get('vote_average') or 0)
+            if m_vote and m_vote < vote_average_min:
                 return False
 
         # Check excluded genres
@@ -821,18 +1121,24 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
 
     all_candidates = unwatched_directs + unwatched_results
 
+    # Title search, recommendations and reference ripples can't filter by tag server-side
+    all_candidates = _filter_by_excluded_tags(all_candidates, excluded_tag_ids, active_tmdb)
+
     # If specific streaming platform filter is set, query concurrently
     if streaming_filter != "All Platforms" and all_candidates:
         def check_stream(m):
             provs = get_watch_providers(m.get('id'), tmdb_key=active_tmdb)
             m['providers'] = provs
             return m if any(streaming_filter.lower() in p.lower() for p in provs) else None
-            
+
         with ThreadPoolExecutor(max_workers=8) as executor:
             all_candidates = [m for m in executor.map(check_stream, all_candidates) if m]
 
     for movie in all_candidates:
-        movie['genres'] = [idToGenre[g] for g in movie.get('genre_ids', []) if g in idToGenre]
+        if movie.get('genre_ids'):
+            movie['genres'] = [idToGenre[g] for g in movie.get('genre_ids', []) if g in idToGenre]
+        elif not isinstance(movie.get('genres'), list):
+            movie['genres'] = []
 
     # Vectorized batch prediction for all candidates (< 5ms)
     raw_scores = predict_movie_scores_batch(
@@ -849,79 +1155,48 @@ def analyze(watchedSet_titles, watchedSet_ids, hated_movies, ai_analysis, ai_mod
         except Exception:
             cf_predictions = {}
 
-    prompt_tokens = [
-        t.lower() for t in re.split(r'[^a-zA-Z0-9\-]+', clean_raw)
-        if len(t) > 2 and t.lower() not in _FILLER_TERMS
-    ]
-
+    # Ranking: relevance to the prompt decides *which* films; the personal model and a
+    # rating-quality prior decide the order among relevant films.
     hated_set = {titleNormalize(h) for h in hated_movies if h}
     finalPicks = []
     for idx, movie in enumerate(all_candidates):
         title_norm = titleNormalize(movie.get('title', ''))
-        thematic_weight = movie.get('thematic_weight', 1.0)
-        raw_score = raw_scores[idx]
-
-        m_overview = str(movie.get('overview') or '').lower()
-        m_title = str(movie.get('title') or '').lower()
-        m_genres_list = [g.lower() for g in movie.get('genres', [])]
-        combined_text = f"{m_title} {m_overview} {' '.join(m_genres_list)}"
-
-        # Universal Query Relevance Gate:
-        # Check whether candidate has semantic connection to query tokens or thematic keywords
-        if not movie.get('is_direct_match'):
-            has_thematic_kw_match = any(t_kw in combined_text for t_kw in thematic_kws) if thematic_kws else False
-            token_hits = sum(1 for tok in prompt_tokens if tok in combined_text) if prompt_tokens else 0
-            is_thematic_candidate = movie.get('thematic_match') or has_thematic_kw_match or (token_hits > 0)
-
-            if prompt_tokens or thematic_kws:
-                if is_thematic_candidate:
-                    thematic_weight = max(thematic_weight, 1.15 + (0.05 * min(3, token_hits)))
-                else:
-                    # Heavily penalize unrelated blockbuster candidates (e.g. Avengers for 'gore movies')
-                    thematic_weight *= 0.15
-
-        # Compound requirement matching (e.g. gore AND nudity)
-        if compound_groups:
-            if movie.get('compound_match'):
-                thematic_weight = max(thematic_weight, 1.35)
-            else:
-                matched_groups = 0
-                for grp in compound_groups:
-                    if any(term in combined_text for term in grp):
-                        matched_groups += 1
-                if matched_groups >= len(compound_groups):
-                    thematic_weight *= 1.35
-                elif matched_groups == 0:
-                    thematic_weight *= 0.15
-                else:
-                    # Partial match (e.g. gore without nudity or vice-versa)
-                    thematic_weight *= 0.65
-
-        # Exact title equality check (fixes hated-movie substring penalty bug)
+        predicted = raw_scores[idx]
         if title_norm in hated_set:
-            raw_score = max(0.5, raw_score - 2.5)
-
-        base_score = round(min(5.0, raw_score * thematic_weight), 2)
-
-        # Blend Collaborative Filtering prediction if available
+            predicted = max(0.5, predicted - 2.5)
         m_id = movie.get('id')
         if m_id in cf_predictions:
-            cf_pred = cf_predictions[m_id]
-            movie['collaborative_score'] = cf_pred
-            score = round(min(5.0, (base_score * 0.75) + (cf_pred * 0.25)), 2)
-        else:
-            score = base_score
+            movie['collaborative_score'] = cf_predictions[m_id]
+            predicted = (predicted * 0.75) + (cf_predictions[m_id] * 0.25)
 
-        movie['ai_score'] = score
+        genres = set(movie.get('genres') or [])
+        text = f"{str(movie.get('title') or '').lower()} {str(movie.get('overview') or '').lower()}"
+        person_hit = (m_id in person_ids) if person_data else None
+        ref_hit = bool(movie.get('ref_ripple')) if ref_entity else None
+        rel, hard_ok = _relevance(genres, text, intent, tag_hit=int(movie.get('tag_hit') or 0),
+                                  person_hit=person_hit, ref_hit=ref_hit)
+        if movie.get('is_direct_match'):
+            rel, hard_ok = 1.0, True
+
+        quality = _quality(movie, prefer_obscure=intent['prefer_obscure'], upcoming=is_upcoming)
+        predicted_norm = max(0.0, min(1.0, (predicted - 1.0) / 4.0))
+        rank = 0.55 * rel + 0.25 * predicted_norm + 0.20 * quality
+        if not hard_ok:
+            rank *= 0.45
+        if person_hit is False:
+            rank *= 0.35
+
+        movie['relevance'] = round(rel, 3)
+        movie['rank_score'] = round(rank, 4)
+        movie['predicted_rating'] = round(max(0.5, min(5.0, predicted)), 2)
+        # The "% match" shown in the app follows the ranking, so order and number agree
+        movie['ai_score'] = round(max(0.5, min(5.0, 1.0 + 4.0 * rank)), 2)
         finalPicks.append(movie)
 
-    # Sort unwatched recommendation results by AI score while keeping direct search matches prominent
+    # Direct title matches stay on top; everything else by rank
     directs = [m for m in finalPicks if m.get('is_direct_match')]
     others = [m for m in finalPicks if not m.get('is_direct_match')]
-    if is_upcoming:
-        others.sort(key=lambda x: (x.get('ai_score', 0) >= 3.0, x.get('popularity', 0)), reverse=True)
-    else:
-        others.sort(key=lambda x: x.get('ai_score', 0), reverse=True)
+    others.sort(key=lambda x: x.get('rank_score', 0), reverse=True)
 
     # Franchise & Sequel Diversity Gating:
     # Cap single franchises to max 1 entry in the top 12 (and max 2 overall) to prevent franchise flooding

@@ -3,6 +3,7 @@ import sys
 import unittest
 import pandas as pd
 import numpy as np
+import joblib
 import tempfile
 import shutil
 
@@ -15,11 +16,10 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     try: sys.stdout.reconfigure(encoding='utf-8')
     except Exception: pass
 
-from backend.sync_letterboxd import sync_rss
-from backend.recommender import titleNormalize, load_watched_data
+from backend.recommender import titleNormalize
 from backend.feature_engineering import feature_engineering
 from backend.model_train import train_personal_model
-from backend.predictions import predict_movie_score, get_post_watch_recommendations, get_watch_providers, load_ai
+from backend.predictions import predict_movie_score, get_post_watch_recommendations, get_watch_providers
 from backend.query_parser import _fallback_mood_match
 
 class TestMBMRecommender(unittest.TestCase):
@@ -58,17 +58,6 @@ class TestMBMRecommender(unittest.TestCase):
         self.assertEqual(titleNormalize("  Everything Everywhere All at Once  "), "everythingeverywhereallatonce")
         self.assertEqual(titleNormalize("OMG: Oh My God!"), "omgohmygod")
         print("  -> PASSED: Title normalization accurately strips non-alphanumeric chars and whitespace.")
-
-    def test_02_watched_movies_and_veto_system(self):
-        print("\n[Test 2] Testing watchedMovies & Veto parsing...")
-        watched_titles, watched_ids, hated_movies = load_watched_data(self.sample_csv, self.sample_memory)
-        self.assertGreater(len(watched_titles), 0)
-        self.assertGreater(len(watched_ids), 0)
-        self.assertGreater(len(hated_movies), 0)
-        # Check that low rated movies (<= 2.5) are in hated list
-        self.assertIn("movie1", hated_movies) # index 1 had 2.0 rating
-        self.assertNotIn("movie0", hated_movies) # index 0 had 5.0 rating
-        print(f"  -> PASSED: Loaded {len(watched_titles)} watched titles, {len(hated_movies)} vetoed movies.")
 
     def test_03_feature_engineering_pipeline(self):
         print("\n[Test 3] Testing Feature Engineering with Director, Cast & NLP keywords...")
@@ -118,12 +107,10 @@ class TestMBMRecommender(unittest.TestCase):
             model_path=self.sample_model,
             columns_path=self.sample_cols
         )
-        model, cols, vec, enc = load_ai(
-            model_path=self.sample_model,
-            cols_path=self.sample_cols,
-            vec_path=self.sample_vec,
-            enc_path=self.sample_enc
-        )
+        model = joblib.load(self.sample_model)
+        cols = joblib.load(self.sample_cols)
+        vec = joblib.load(self.sample_vec)
+        enc = joblib.load(self.sample_enc) if os.path.exists(self.sample_enc) else None
 
         high_score = predict_movie_score(
             model, cols, vec, enc,
@@ -170,12 +157,6 @@ class TestMBMRecommender(unittest.TestCase):
         tense_genres = _fallback_mood_match("Give me something tense and scary")
         self.assertTrue(any(g in tense_genres for g in ["Horror", "Thriller", "Mystery"]))
         print("  -> PASSED: Fallback mood parser accurately mapped mood keywords to genres.")
-
-    def test_09_letterboxd_rss_parser_structure(self):
-        print("\n[Test 9] Testing Letterboxd RSS Parser structure...")
-        ok, msg = sync_rss("non_existent_dummy_user_123456789", self.sample_csv)
-        self.assertFalse(ok)
-        print("  -> PASSED: Letterboxd RSS parser correctly handles 404/invalid user gracefully.")
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

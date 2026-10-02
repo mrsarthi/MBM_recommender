@@ -1,6 +1,5 @@
 import os
 import sys
-import shutil
 import hashlib
 import base64
 from dotenv import load_dotenv
@@ -15,7 +14,6 @@ load_dotenv(dotenv_path=os.path.join(BASE_DIR, '.env'))
 
 TMDB_KEY = os.getenv('TMDB_KEY') or os.getenv('TMDB_key') or os.getenv('TMDB_API_KEY', '')
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
-TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
 
 LETTERBOXD_USERNAME = os.getenv('LETTERBOXD_USERNAME', '')
 DATABASE_URL = os.getenv('DATABASE_URL', '')
@@ -40,43 +38,9 @@ def get_user_data_path(filename):
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     return full_path
 
-CONFIG_FILE = get_user_data_path('config.json')
-APP_MEMORY_FILE = get_user_data_path('app_memory_ids.csv')
 PROFILE_PATH = get_user_data_path('user_data/user_profile.csv')
 FEATURES_PATH = get_user_data_path('user_data/user_profile_features.csv')
 MODEL_PATH = get_user_data_path('user_data/personal_ai_model.pkl')
 COLUMNS_PATH = get_user_data_path('user_data/model_columns.pkl')
 VECTORIZER_PATH = get_user_data_path('user_data/summary_vectorizer.pkl')
 ENCODERS_PATH = get_user_data_path('user_data/feature_encoders.pkl')
-WATCHLIST_PATH = get_user_data_path('user_data/watchlist.csv')
-
-def get_user_profile_path(username=None):
-    clean = (username or '').strip().lstrip('@').lower()
-    if clean and clean != 'guest':
-        p = get_user_data_path(f'user_data/profiles/{clean}_profile.csv')
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        return p
-    if LETTERBOXD_USERNAME:
-        return PROFILE_PATH
-    return get_user_data_path('user_data/empty_profile.csv')
-
-def get_user_watchlist_path(username=None):
-    clean = (username or '').strip().lstrip('@').lower()
-    if clean and clean != 'guest':
-        p = get_user_data_path(f'user_data/profiles/{clean}_watchlist.csv')
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        return p
-    if LETTERBOXD_USERNAME:
-        return WATCHLIST_PATH
-    return get_user_data_path('user_data/empty_watchlist.csv')
-
-if LETTERBOXD_USERNAME:
-    local_profile = os.path.join(BASE_DIR, 'user_data', 'user_profile.csv')
-    if os.path.exists(local_profile) and (not os.path.exists(PROFILE_PATH) or os.path.getsize(PROFILE_PATH) == 0):
-        try: shutil.copy2(local_profile, PROFILE_PATH)
-        except Exception: pass
-
-    local_watchlist = os.path.join(BASE_DIR, 'user_data', 'watchlist.csv')
-    if os.path.exists(local_watchlist) and (not os.path.exists(WATCHLIST_PATH) or os.path.getsize(WATCHLIST_PATH) == 0):
-        try: shutil.copy2(local_watchlist, WATCHLIST_PATH)
-        except Exception: pass

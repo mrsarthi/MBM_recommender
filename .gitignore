@@ -47,3 +47,8 @@ desktop.ini
 *.tmp
 *.log
 scratch/
+
+# Local tooling and personal notes
+.kilo/
+check/
+mbmr_plan

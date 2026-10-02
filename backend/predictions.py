@@ -1,16 +1,7 @@
-import os
-import joblib
 import pandas as pd
 import numpy as np
 import requests
-from backend.config import MODEL_PATH, COLUMNS_PATH, VECTORIZER_PATH, ENCODERS_PATH, TMDB_KEY, TMDB_BASE_URL
-
-def load_ai(model_path=MODEL_PATH, cols_path=COLUMNS_PATH, vec_path=VECTORIZER_PATH, enc_path=ENCODERS_PATH):
-    model = joblib.load(model_path) if os.path.exists(model_path) else None
-    cols = joblib.load(cols_path) if os.path.exists(cols_path) else None
-    vec = joblib.load(vec_path) if os.path.exists(vec_path) else None
-    encoders = joblib.load(enc_path) if os.path.exists(enc_path) else None
-    return model, cols, vec, encoders
+from backend.config import TMDB_KEY, TMDB_BASE_URL
 
 def predict_movie_scores_batch(model, feature_cols, vectorizer, encoders, movies_list, context="Alone"):
     """
